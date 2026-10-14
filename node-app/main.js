@@ -393,7 +393,7 @@ function createWindow() {
     minHeight: 560,
     resizable: true,
     autoHideMenuBar: true,
-    title: "Aoi mesh · 本机节点",
+    title: "Aoi mesh",
     ...(fs.existsSync(ICON) ? { icon: ICON } : {}),
     webPreferences: { nodeIntegration: true, contextIsolation: false },
   });
