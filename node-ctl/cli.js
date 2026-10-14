@@ -11,7 +11,6 @@ const USAGE = `opencode-mesh node-ctl
   node-ctl start <node>                远程启动节点 opencode
   node-ctl stop <node>                 远程停止节点 opencode
   node-ctl restart <node>              远程重启节点 opencode
-  node-ctl poweroff <node>             远程关机（电源管理；需人工再次开机）
   node-ctl fleet-config                输出主控 opencode 的 fleet MCP 配置片段
   node-ctl visitors-config [--out p]   生成主控侧 frpc visitors 配置（stcp 接入）
   node-ctl dispatch <node> "<任务>"    按 aoi-mesh 协议派发任务（信封+回执解析，复用会话）
@@ -67,12 +66,7 @@ async function cmdList(config) {
 
 async function cmdLifecycle(config, action, nodeName) {
   const node = getNode(config, nodeName);
-  const endpoint =
-    action === "status"
-      ? "/opencode/status"
-      : action === "poweroff"
-        ? "/system/poweroff"
-        : `/opencode/${action}`;
+  const endpoint = action === "status" ? "/opencode/status" : `/opencode/${action}`;
   const method = action === "status" ? "GET" : "POST";
   const timeout = action === "restart" ? 90000 : action === "start" ? 60000 : 30000;
   const r = await agentCall(node, method, endpoint, timeout);
@@ -89,11 +83,6 @@ async function cmdLifecycle(config, action, nodeName) {
   if (!r.json) {
     console.error(`失败：非 JSON 响应（${r.status}）：${r.text.slice(0, 200)}`);
     process.exitCode = 1;
-    return;
-  }
-  if (action === "poweroff") {
-    console.log(`节点 ${nodeName}: 关机指令${r.json.ok ? "已下发" : "失败"}${r.json.scheduled ? `（约 ${r.json.delaySec ?? 3} 秒后断电）` : ""}`);
-    if (!r.json.ok) process.exitCode = 1;
     return;
   }
   if (action === "status") {
@@ -222,7 +211,7 @@ ${sections.join("\n\n")}
   try {
     const { config } = loadConfig(args.config);
     if (command === "list") return await cmdList(config);
-    if (["status", "start", "stop", "restart", "poweroff"].includes(command)) {
+    if (["status", "start", "stop", "restart"].includes(command)) {
       if (!args._[1]) {
         console.error(`${command} 需要节点名。用法： node-ctl ${command} <node>`);
         process.exitCode = 1;

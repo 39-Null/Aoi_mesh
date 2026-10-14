@@ -749,12 +749,7 @@ async function nodeAction(root, name, action) {
     if (hit) loc = hit[1];
   }
   if (!loc?.agentUrl) return { ok: false, error: `节点 "${name}" 未在 nodes.json 配置` };
-  const endpoint =
-    action === "status"
-      ? "/opencode/status"
-      : action === "poweroff"
-        ? "/system/poweroff"
-        : `/opencode/${action}`;
+  const endpoint = action === "status" ? "/opencode/status" : `/opencode/${action}`;
   const method = action === "status" ? "GET" : "POST";
   const timeout = action === "restart" ? 90000 : action === "start" ? 60000 : 30000;
 
