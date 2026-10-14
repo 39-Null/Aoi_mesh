@@ -986,7 +986,7 @@ function applyMasterImport(root, raw) {
     }
   }
   if (!data || data.app !== "opencode-mesh" || data.kind !== "master-config") {
-    throw new Error("剪贴板内容不是 opencode-mesh 主控配置（缺少标识）");
+    throw new Error("剪贴板内容不是 Aoi mesh 主控配置（缺少标识）");
   }
   if (!data.registry?.address || !data.registry?.adminToken) {
     throw new Error("导入配置缺少 Hub 地址或管理密钥");

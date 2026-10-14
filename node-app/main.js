@@ -393,7 +393,7 @@ function createWindow() {
     minHeight: 560,
     resizable: true,
     autoHideMenuBar: true,
-    title: "Aoi_mesh · 本机节点",
+    title: "Aoi mesh · 本机节点",
     ...(fs.existsSync(ICON) ? { icon: ICON } : {}),
     webPreferences: { nodeIntegration: true, contextIsolation: false },
   });
@@ -406,7 +406,7 @@ function createWindow() {
       try {
         if (!trayHintShown && tray && process.platform === "win32") {
           tray.displayBalloon({
-            title: "Aoi_mesh",
+            title: "Aoi mesh",
             content: "已最小化到系统托盘：节点与隧道保持运行。双击托盘图标恢复窗口；托盘右键菜单可退出。",
           });
           trayHintShown = true;
@@ -421,7 +421,7 @@ function createTray() {
     let img = nativeImage.createFromPath(ICON);
     if (img.isEmpty()) img = nativeImage.createEmpty();
     tray = new Tray(img);
-    tray.setToolTip("Aoi_mesh · opencode-mesh（常驻中）");
+    tray.setToolTip("Aoi mesh（常驻中）");
     const menu = Menu.buildFromTemplate([
       { label: "显示主界面", click: () => showMainWindow() },
       { type: "separator" },
