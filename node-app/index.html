@@ -667,6 +667,29 @@
     }
   });
 
+  function onlineBadgeInfo(online) {
+    return {
+      cls: "badge badgeOnline " + (online === true ? "ok" : online === false ? "bad" : ""),
+      text: online === true ? "在线" : online === false ? "离线" : "仅本地",
+    };
+  }
+  function ocBadgeInfo(oc) {
+    if (!oc) return { cls: "badge badgeOc", text: "opencode 状态未知", title: "" };
+    return {
+      cls: "badge badgeOc " + (oc.running ? "ok" : ""),
+      text: oc.running ? `opencode 运行中${oc.pid ? " PID " + oc.pid : ""}` : "opencode 已停止",
+      title: oc.pid ? "PID " + oc.pid : "",
+    };
+  }
+  function nodeMetaText(n) {
+    const parts = [];
+    if (n.opencodePort) parts.push(`opencode 127.0.0.1:${n.opencodePort}`);
+    if (n.agentPort) parts.push(`agent 127.0.0.1:${n.agentPort}`);
+    if (n.reachable) parts.push(n.reachable.ok ? `隧道可达 v${n.reachable.version || "?"}` : "隧道不可达");
+    else parts.push("隧道未配置");
+    return parts.join(" · ");
+  }
+
   async function refreshMasterList() {
     const r = await ipcRenderer.invoke("mesh:master:list");
     const box = $("nodeList");
@@ -680,30 +703,31 @@
     for (const n of r.nodes) {
       const item = document.createElement("div");
       item.className = "nodeItem";
+      item.dataset.id = n.id || n.name;
       const head = document.createElement("div");
       head.className = "nodeHead";
       const nm = document.createElement("span");
       nm.className = "nodeName";
       nm.textContent = n.name || n.id;
       const badge = document.createElement("span");
-      const online = n.online;
-      badge.className = "badge " + (online === true ? "ok" : online === false ? "bad" : "");
-      badge.textContent = online === true ? "在线" : online === false ? "离线" : "仅本地";
+      const on = onlineBadgeInfo(n.online);
+      badge.className = on.cls;
+      badge.textContent = on.text;
+      const ocb = document.createElement("span");
+      const oc = ocBadgeInfo(n.opencode);
+      ocb.className = oc.cls;
+      ocb.textContent = oc.text;
+      if (oc.title) ocb.title = oc.title;
       const idtag = document.createElement("span");
       idtag.className = "nodeId";
       idtag.textContent = "id: " + (n.id || n.name);
-      head.append(nm, badge, idtag);
+      head.append(nm, badge, ocb, idtag);
       const meta = document.createElement("div");
       meta.className = "nodeMeta";
-      const parts = [];
-      if (n.opencodePort) parts.push(`opencode 127.0.0.1:${n.opencodePort}`);
-      if (n.agentPort) parts.push(`agent 127.0.0.1:${n.agentPort}`);
-      if (n.reachable) parts.push(n.reachable.ok ? `隧道可达 v${n.reachable.version || "?"}` : "隧道不可达");
-      else parts.push("隧道未配置");
-      meta.textContent = parts.join(" · ");
+      meta.textContent = nodeMetaText(n);
       const btns = document.createElement("div");
       btns.className = "btns nodeBtns";
-      for (const [label, act] of [["状态", "status"], ["启动", "start"], ["停止", "stop"], ["重启", "restart"]]) {
+      for (const [label, act] of [["启动", "start"], ["停止", "stop"], ["重启", "restart"]]) {
         const b = document.createElement("button");
         b.className = "mini ghost";
         b.textContent = label;
@@ -715,11 +739,43 @@
           } else {
             setOp(`${n.name || n.id} ${label}: 失败 — ${res.error}`, "bad");
           }
+          await refreshMasterList();
         };
         btns.append(b);
       }
       item.append(head, meta, btns);
       box.append(item);
+    }
+  }
+
+  /** 自动更新节点状态（不重建 DOM）：刷新 在线/opencode 徽标与信息行；列表长度变化时回退整表刷新 */
+  async function updateMasterBadges() {
+    const box = $("nodeList");
+    if (!box.querySelector(".nodeItem")) return;
+    const r = await ipcRenderer.invoke("mesh:master:list");
+    if (!r.ok || !r.nodes) return;
+    if (box.querySelectorAll(".nodeItem").length !== r.nodes.length) {
+      await refreshMasterList();
+      return;
+    }
+    for (const n of r.nodes) {
+      const item = box.querySelector(`.nodeItem[data-id="${CSS.escape(n.id || n.name)}"]`);
+      if (!item) continue;
+      const badge = item.querySelector(".badgeOnline");
+      if (badge) {
+        const on = onlineBadgeInfo(n.online);
+        badge.className = on.cls;
+        badge.textContent = on.text;
+      }
+      const ocb = item.querySelector(".badgeOc");
+      if (ocb) {
+        const oc = ocBadgeInfo(n.opencode);
+        ocb.className = oc.cls;
+        ocb.textContent = oc.text;
+        ocb.title = oc.title || "";
+      }
+      const meta = item.querySelector(".nodeMeta");
+      if (meta) meta.textContent = nodeMetaText(n);
     }
   }
 
@@ -855,6 +911,10 @@
     if (r.started) setOp(`隧道已自动启动（127.0.0.1:${r.port}）`, "ok");
     await refreshVisitorStatus();
   })();
+  setInterval(async () => {
+    const sec = document.querySelector('[data-tab-content="master"]');
+    if (sec && !sec.classList.contains("hidden")) await updateMasterBadges();
+  }, 8000);
 </script>
 </body>
 </html>

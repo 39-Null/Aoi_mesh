@@ -677,9 +677,16 @@ async function listNodesMerged(root) {
     const reg = regs.find((n) => (n.id || n.name) === key) || null;
     const loc = local[key] || (reg?.name ? local[reg.name] : null) || null;
     let reach = null;
+    let opencode = null;
     if (loc?.agentUrl) {
       const r = await httpJson("GET", loc.agentUrl.replace(/\/+$/, "") + "/health", undefined, {}, 4000);
       reach = r.status === 200 && r.json?.ok ? { ok: true, version: r.json.version } : { ok: false };
+      if (reach.ok) {
+        const st = await httpJson("GET", loc.agentUrl.replace(/\/+$/, "") + "/opencode/status", undefined, {
+          "X-Agent-Token": loc.agentToken || "",
+        }, 4000);
+        if (st.status === 200 && st.json) opencode = { running: !!st.json.running, pid: st.json.pid || null };
+      }
     }
     out.push({
       id: key,
@@ -689,6 +696,7 @@ async function listNodesMerged(root) {
       agentPort: reg?.agentRemotePort ?? null,
       local: !!loc,
       reachable: reach,
+      opencode,
     });
   }
   return { ok: true, nodes: out, registryOk: regNodes !== null };
