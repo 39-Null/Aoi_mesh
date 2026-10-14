@@ -201,12 +201,10 @@
     </section>
 
     <section class="card">
-      <div class="cardTitle">隧道（visitor）</div>
+      <div class="cardTitle">节点隧道（visitor）<span class="dim">（全自动运行；同步节点时自动更新）</span></div>
       <div id="visitorState" class="dim">…</div>
       <div class="btns" style="margin-top:8px; margin-bottom:0;">
-        <button id="btnVisGen" class="mini">生成/更新配置</button>
-        <button id="btnVisStart" class="mini">启动隧道</button>
-        <button id="btnVisStop" class="mini ghost">停止隧道</button>
+        <button id="btnVisToggle" class="mini">停用隧道</button>
         <button id="btnVisLog" class="mini ghost">查看日志</button>
       </div>
     </section>
@@ -248,10 +246,10 @@
     const old = btn.textContent;
     btn.disabled = true;
     btn.textContent = label;
-    try { await fn(); } finally {
+    try { await fn();     } finally {
       busy = false;
       btn.disabled = false;
-      btn.textContent = old;
+      if (btn.textContent === label) btn.textContent = old;
     }
   }
 
@@ -389,7 +387,7 @@
       return;
     }
     if (r.renamed) {
-      st.textContent = `⚠ 节点名已变更（注册身份：${r.state.name} → 当前配置：${cfg.name}）：请点「重置身份」并填写新的加入密钥后重新启动节点`;
+      st.textContent = `节点名由「${r.state.name}」变更为「${cfg.name}」：启动节点后将自动向 Hub 迁移（保留端口与凭据，无需新密钥）`;
       st.className = "warn";
       return;
     }
@@ -558,18 +556,12 @@
     const r = await ipcRenderer.invoke("mesh:master:sync");
     if (!r.ok) { setOp(`同步失败：${r.error}`, "bad"); return; }
     let extra = "";
-    const gen = await ipcRenderer.invoke("mesh:master:visitors:generate");
-    if (gen.ok) {
-      const vis = await ipcRenderer.invoke("mesh:master:visitors:status");
-      if (vis.running) {
-        const rs = await ipcRenderer.invoke("mesh:master:visitors:start");
-        extra = rs.ok ? "；隧道已自动更新并重启" : `；隧道重启失败：${rs.error}`;
-      } else {
-        extra = "；隧道配置已更新";
-      }
-    } else {
-      extra = `；隧道配置更新失败：${gen.error}`;
-    }
+    const ens = await ipcRenderer.invoke("mesh:master:visitors:ensure", { refresh: true });
+    if (ens.skipped && ens.reason === "paused") extra = "；隧道已停用（手动）";
+    else if (ens.skipped) extra = `；未启动隧道：${ens.error || ens.reason}`;
+    else if (ens.refreshed) extra = "；隧道已自动更新并重启";
+    else if (ens.ok) extra = "；隧道已自动启动";
+    else extra = `；隧道处理失败：${ens.error}`;
     setOp(`已同步 ${r.count} 个节点（新增 ${r.added?.length || 0}，清理 ${r.removed?.length || 0}）${extra}`, "ok");
     await refreshMasterList();
     await refreshVisitorStatus();
@@ -660,37 +652,39 @@
   async function refreshVisitorStatus() {
     const s = await ipcRenderer.invoke("mesh:master:visitors:status");
     const el = $("visitorState");
-    if (!s.configured) {
-      el.textContent = "未生成配置（点击「生成/更新配置」）";
-      el.className = "dim";
-    } else if (s.running) {
-      el.textContent = `运行中（PID ${s.pid}，监听 127.0.0.1:${s.port}）`;
-      el.className = "ok";
-    } else {
-      el.textContent = "已配置，未运行";
+    const btn = $("btnVisToggle");
+    if (s.paused) {
+      el.textContent = "已停用（手动）；点「启用隧道」恢复自动运行";
       el.className = "warn";
+      btn.textContent = "启用隧道";
+      return;
+    }
+    btn.textContent = "停用隧道";
+    if (s.running) {
+      el.textContent = `运行中（PID ${s.pid}，监听 127.0.0.1:${s.port}；自动维护）`;
+      el.className = "ok";
+    } else if (s.configured) {
+      el.textContent = "未运行（同步节点或启动 App 时自动拉起）";
+      el.className = "dim";
+    } else {
+      el.textContent = "未配置（同步节点后将自动生成并启动）";
+      el.className = "dim";
     }
   }
-  $("btnVisGen").onclick = () => withBusy($("btnVisGen"), "生成中…", async () => {
-    const r = await ipcRenderer.invoke("mesh:master:visitors:generate");
-    if (r.ok) {
-      setOp("隧道配置已生成：\n" + (r.mapping || []).map((m) => `  ${m.name}: opencode→127.0.0.1:${m.opencode}，agent→127.0.0.1:${m.agent}`).join("\n"), "ok");
-    } else {
-      setOp(`生成失败：${r.error}`, "bad");
-    }
+  $("btnVisToggle").onclick = async () => {
+    await withBusy($("btnVisToggle"), "处理中…", async () => {
+      const s = await ipcRenderer.invoke("mesh:master:visitors:status");
+      if (s.paused) {
+        const r = await ipcRenderer.invoke("mesh:master:visitors:setEnabled", true);
+        if (r.ok && r.skipped) setOp(`未启动：${r.error || r.reason}`, "warn");
+        else setOp(r.ok ? `隧道已启用（127.0.0.1:${r.port}）` : `启用失败：${r.error}`, r.ok ? "ok" : "bad");
+      } else {
+        const r = await ipcRenderer.invoke("mesh:master:visitors:setEnabled", false);
+        setOp(r.ok ? "隧道已停用（保持关闭，直到再次启用）" : `停用失败：${r.error}`, r.ok ? "ok" : "bad");
+      }
+    });
     await refreshVisitorStatus();
-  });
-  $("btnVisStart").onclick = () => withBusy($("btnVisStart"), "启动中…", async () => {
-    setOp("正在启动隧道…");
-    const r = await ipcRenderer.invoke("mesh:master:visitors:start");
-    setOp(r.ok ? `隧道已启动（监听 127.0.0.1:${r.port}）` : `启动失败：${r.error}`, r.ok ? "ok" : "bad");
-    await refreshVisitorStatus();
-  });
-  $("btnVisStop").onclick = () => withBusy($("btnVisStop"), "停止中…", async () => {
-    const r = await ipcRenderer.invoke("mesh:master:visitors:stop");
-    setOp(r.ok ? `隧道已停止（PID ${r.pid}）` : `停止失败：${r.error}`, r.ok ? "ok" : "bad");
-    await refreshVisitorStatus();
-  });
+  };
   $("btnVisLog").onclick = async () => {
     const card = $("visitorLogCard");
     card.classList.toggle("hidden");
@@ -723,6 +717,11 @@
   /* ---------------- 启动 ---------------- */
   refresh();
   setInterval(refresh, 8000);
+  (async () => {
+    const r = await ipcRenderer.invoke("mesh:master:visitors:ensure");
+    if (r.started) setOp(`隧道已自动启动（127.0.0.1:${r.port}）`, "ok");
+    await refreshVisitorStatus();
+  })();
 </script>
 </body>
 </html>

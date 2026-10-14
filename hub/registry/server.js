@@ -173,6 +173,45 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (route === "POST /rename") {
+      const body = await readBody(req);
+      if (body === null) return json(res, 400, { ok: false, error: "bad json" });
+      const { name, token } = body;
+      if (!name || !/^[a-zA-Z0-9_-]{2,32}$/.test(name)) {
+        return json(res, 400, { ok: false, error: "invalid name" });
+      }
+      const entry = token ? Object.values(data.nodes).find((n) => n.token === token) : null;
+      if (!entry) return json(res, 401, { ok: false, error: "invalid token" });
+      const oldName = entry.name;
+      const existing = data.nodes[name];
+      if (existing && existing.token !== token) {
+        return json(res, 409, { ok: false, error: "name already used by another node" });
+      }
+      if (oldName !== name) {
+        entry.name = name;
+        data.nodes[name] = entry;
+        delete data.nodes[oldName];
+        for (const k of Object.keys(data.keys)) {
+          if (data.keys[k].usedBy === oldName) data.keys[k].usedBy = name;
+        }
+      }
+      entry.lastSeen = new Date().toISOString();
+      save();
+      return json(res, 200, {
+        ok: true,
+        renamedFrom: oldName !== name ? oldName : null,
+        node: {
+          name: entry.name,
+          token: entry.token,
+          stcpSecret: entry.stcpSecret,
+          opencodeRemotePort: entry.opencodeRemotePort,
+          agentRemotePort: entry.agentRemotePort,
+        },
+        frps: { addr: FRPS_ADDR, port: FRPS_PORT, token: data.frpToken },
+        heartbeatIntervalSec: 60,
+      });
+    }
+
     if (route === "POST /heartbeat") {
       const body = await readBody(req);
       if (body === null) return json(res, 400, { ok: false, error: "bad json" });

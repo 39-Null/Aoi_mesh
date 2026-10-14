@@ -203,14 +203,66 @@ class Agent {
     return false;
   }
 
-  async ensureRegistered() {
-    if (this.state?.name && this.config.name && this.state.name !== this.config.name) {
-      log(`节点名已由 "${this.state.name}" 变更为 "${this.config.name}"：本地旧注册状态不再适用，将以新名称重新注册（需要未被使用的加入密钥；若提示密钥已被使用，请先在 App 中执行「重置身份」并获取新密钥）`);
-      this.state = null;
-      try { saveState(null); } catch {}
+  /** 身份模型：节点名是可变标签，注册 token 是不可变的唯一身份。
+   *  启动时以 token 向 Hub 迁移/确认名称（幂等）。
+   *  返回 "ok" | "conflict" | "unauthorized" | "unsupported"（旧版 Hub）| "error" */
+  async renameTo() {
+    const res = await httpJson("POST", `${this.hubBase}/rename`, {
+      name: this.config.name,
+      token: this.state.token,
+    });
+    if (res.status === 200 && res.json?.ok) {
+      const old = res.json.renamedFrom || this.state.name || this.config.name;
+      this.state = {
+        ...this.state,
+        name: res.json.node.name,
+        stcpSecret: res.json.node.stcpSecret || this.state.stcpSecret,
+        opencodeRemotePort: res.json.node.opencodeRemotePort ?? this.state.opencodeRemotePort,
+        agentRemotePort: res.json.node.agentRemotePort ?? this.state.agentRemotePort,
+        frps: res.json.frps || this.state.frps,
+      };
+      saveState(this.state);
+      if (old !== res.json.node.name) {
+        log(`改名成功："${old}" → "${res.json.node.name}"（保留原身份与端口分配）`);
+      }
+      return "ok";
     }
-    if (this.state?.token && this.state?.stcpSecret) return true;
-    if (this.state?.token && !this.state?.stcpSecret) {
+    if (res.status === 404) return "unsupported";
+    if (res.status === 409) return "conflict";
+    if (res.status === 401) return "unauthorized";
+    log(`身份迁移请求失败（${res.status}）：${res.json?.error || res.text}`);
+    return "error";
+  }
+
+  async ensureRegistered() {
+    if (this.state?.token && this.state?.stcpSecret) {
+      while (!this.stopRequested) {
+        const r = await this.renameTo();
+        if (r === "ok") return true;
+        if (r === "unsupported") {
+          if (this.state.name && this.state.name !== this.config.name) {
+            log(`当前 Hub 不支持改名迁移：请重置身份并使用新的加入密钥重新注册（原名称 "${this.state.name}"）`);
+            this.state = null;
+            try { saveState(null); } catch {}
+            break;
+          }
+          return true;
+        }
+        if (r === "conflict") {
+          log(`名称 "${this.config.name}" 已被其他节点占用：请改用其他名称（30 秒后重试）`);
+          await new Promise((r2) => setTimeout(r2, 30000));
+          continue;
+        }
+        if (r === "unauthorized") {
+          log("本地注册凭据已失效（可能已被吊销）：将以加入密钥重新注册…");
+          this.state = null;
+          try { saveState(null); } catch {}
+          break;
+        }
+        log("身份迁移失败（网络或服务异常），30 秒后重试…");
+        await new Promise((r2) => setTimeout(r2, 30000));
+      }
+    } else if (this.state?.token && !this.state?.stcpSecret) {
       log("本地状态缺少 stcpSecret（旧版 tcp 状态），尝试用现有 joinKey 重新注册…");
     }
     while (!this.stopRequested) {

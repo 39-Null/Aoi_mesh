@@ -516,21 +516,24 @@ async function listNodesMerged(root) {
   return { ok: true, nodes: out, registryOk: regNodes !== null };
 }
 
-/** 确保主控隧道在线：未运行则按需生成配置并启动（未配置主控时跳过） */
-async function ensureVisitor(root) {
-  const st = await visitorStatus(root);
-  if (st.running) return { ok: true, already: true, port: st.port };
+/** 全自动隧道：未运行则按需生成配置并启动；用户手动停用（visitorPaused）则跳过。
+ *  opts.refresh=true：即使已在运行也重建配置并重启（节点列表变更后）。 */
+async function ensureVisitor(root, opts = {}) {
   const cfg = getMasterConfig(root) || {};
-  const rq = registryRequest(root, cfg.registry);
-  if (!rq.address) {
-    return { ok: false, skipped: true, error: "本机尚未配置 Hub（不启动隧道）" };
+  const st = await visitorStatus(root);
+  if (cfg.visitorPaused) {
+    return { ok: true, skipped: true, reason: "paused", error: "隧道已被手动停用", running: st.running };
   }
-  if (!st.configured) {
-    const gen = await generateVisitors(root);
-    if (!gen.ok) return { ok: false, error: gen.error };
+  if (!Object.keys(cfg.nodes || {}).length) {
+    return { ok: true, skipped: true, reason: "no-nodes", error: "节点列表为空（先同步节点）", running: st.running };
   }
+  if (st.running && !opts.refresh) return { ok: true, already: true, port: st.port, pid: st.pid };
+  const gen = await generateVisitors(root);
+  if (!gen.ok) return { ok: false, error: gen.error };
   const started = await startVisitor(root);
-  return started.ok ? { ok: true, started: true, port: started.port } : { ok: false, error: started.error };
+  return started.ok
+    ? { ok: true, started: true, refreshed: !!opts.refresh, port: started.port }
+    : { ok: false, error: started.error };
 }
 
 /** 一键启动节点：启动 agent + 自动确保隧道在线（本机为主控时） */
@@ -650,10 +653,11 @@ function firstBindPort(root) {
 
 async function visitorStatus(root) {
   const conf = path.join(root, "node-ctl", "visitors.toml");
-  if (!fs.existsSync(conf)) return { configured: false, running: false };
+  const paused = !!getMasterConfig(root)?.visitorPaused;
+  if (!fs.existsSync(conf)) return { configured: false, running: false, paused };
   const port = firstBindPort(root);
   const pid = port ? await findPidByPort(port) : null;
-  return { configured: true, running: !!pid, pid, port };
+  return { configured: true, running: !!pid, pid, port, paused };
 }
 
 async function stopVisitor(root) {
@@ -686,6 +690,23 @@ async function startVisitor(root) {
 
 function visitorLogTail(root, maxLines = 120) {
   return tailFile(path.join(root, "node-ctl", "visitor.log"), maxLines);
+}
+
+/** 隧道开关（停用状态持久化）：启用=自动重建并启动；停用=停止进程 */
+async function setVisitorEnabled(root, enabled) {
+  if (enabled) {
+    const cfg = getMasterConfig(root) || {};
+    cfg.visitorPaused = false;
+    saveMasterConfig(root, cfg);
+    return ensureVisitor(root);
+  }
+  const cfg = getMasterConfig(root) || {};
+  cfg.visitorPaused = true;
+  saveMasterConfig(root, cfg);
+  const st = await visitorStatus(root);
+  if (!st.running) return { ok: true, already: true, running: false };
+  const r = await stopVisitor(root);
+  return { ok: r.ok, running: false, pid: r.pid, error: r.error };
 }
 
 /** 打包主控配置（多控制端一键迁移用；含管理密钥，属密码级敏感信息） */
@@ -791,6 +812,7 @@ module.exports = {
   resetNodeState,
   startNodeFull,
   ensureVisitor,
+  setVisitorEnabled,
   tcpProbe,
   findPidByPort,
   getNodeConfig,
