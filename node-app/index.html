@@ -136,7 +136,7 @@
     </section>
 
     <section class="card">
-      <div class="cardTitle">Token 轮换 <span class="dim">（BotFather /revoke 后粘贴新 token）</span></div>
+      <div class="cardTitle">Token 轮换</div>
       <div class="btns" style="margin-bottom:0;">
         <input id="inpToken" class="grow" type="password" placeholder="粘贴新 token" autocomplete="off" />
         <button id="btnToken" class="mini">更新并重启</button>
@@ -158,11 +158,11 @@
       <div class="cardTitle">节点配置（本机加入网络）</div>
       <div class="fl"><label>节点名</label><input id="inpNodeName" class="grow" type="text" placeholder="显示名，可随时修改" /></div>
       <div class="fl"><label>注册 id</label><span id="nodeIdChip" class="idchip">…</span></div>
-      <div class="fl"><label>加入密钥</label><input id="inpJoinKey" class="grow" type="text" placeholder="一次性密钥（留空表示不修改）" /></div>
-      <div class="fl"><label>opencode</label><input id="inpOcPort" class="short" type="number" placeholder="端口 4096" /><input id="inpOcPass" class="grow" type="password" placeholder="新密码（留空=不修改）" /></div>
-      <div class="fl"><label>确认密码</label><input id="inpOcPass2" class="grow" type="password" placeholder="再次输入新密码（仅修改时填写）" /><span id="ocPassHint" class="dim"></span></div>
+      <div class="fl"><label>加入密钥</label><input id="inpJoinKey" class="grow" type="text" placeholder="一次性密钥" /></div>
+      <div class="fl"><label>opencode</label><input id="inpOcPort" class="short" type="number" placeholder="端口 4096" /><input id="inpOcPass" class="grow" type="password" placeholder="新密码" /></div>
+      <div class="fl"><label>确认密码</label><input id="inpOcPass2" class="grow" type="password" placeholder="再次输入新密码" /><span id="ocPassHint" class="dim"></span></div>
       <div class="fl"><label>agent 端口</label><input id="inpAgentPort" class="short" type="number" placeholder="41999" /></div>
-      <div class="fl"><label>frpc 路径</label><input id="inpFrpc" class="grow" type="text" placeholder="bin/frpc.exe（相对 node-agent 目录）" /></div>
+      <div class="fl"><label>frpc 路径</label><input id="inpFrpc" class="grow" type="text" placeholder="bin/frpc.exe" /></div>
       <div class="btns" style="margin-top:8px; margin-bottom:0;">
         <button id="btnNodeSave" class="mini">保存配置</button>
         <button id="btnNodeStart" class="mini" title="启动节点 agent；并自动确保隧道在线">启动节点</button>
@@ -174,10 +174,10 @@
 
     <section class="card">
       <div class="cardTitle">控制端（可选） <span class="dim">（平权模式：注册后即可管理/邀请其他设备，通常无需密钥）</span></div>
-      <div class="fl"><label>共享密码</label><input id="inpFleetPass" class="grow" type="password" placeholder="各节点统一的 opencode 密码（编排派活用；留空取本机节点密码）" /></div>
+      <div class="fl"><label>共享密码</label><input id="inpFleetPass" class="grow" type="password" placeholder="各节点统一的 opencode 密码" /></div>
       <details>
-        <summary class="dim" style="cursor:pointer; font-size:12px; padding:4px 0;">高级：所有者密钥（可选，兼容旧配置或受限 Hub）</summary>
-        <div class="fl"><label>管理密钥</label><input id="inpRegToken" class="grow" type="password" placeholder="一般留空即可" /></div>
+        <summary class="dim" style="cursor:pointer; font-size:12px; padding:4px 0;">高级：所有者密钥</summary>
+        <div class="fl"><label>管理密钥</label><input id="inpRegToken" class="grow" type="password" placeholder="可留空" /></div>
       </details>
       <div class="btns" style="margin-top:8px; margin-bottom:0;">
         <button id="btnCtlSave" class="mini">保存</button>
@@ -396,10 +396,10 @@
     $("inpRegToken").value = m.registry?.adminToken || "";
     const chip = $("nodeIdChip");
     if (r.registeredId) {
-      chip.textContent = `${r.registeredId}（唯一 · 不可修改）`;
+      chip.textContent = r.registeredId;
       chip.className = "idchip set";
     } else {
-      chip.textContent = "（未注册：首次注册时确定，此后不可修改）";
+      chip.textContent = "未注册";
       chip.className = "idchip";
     }
     const st = $("nodeState");
@@ -409,7 +409,7 @@
       return;
     }
     if (r.renamed) {
-      st.textContent = `显示名将由「${r.state.name}」更新为「${cfg.name}」：启动节点后自动生效（注册 id ${r.registeredId || "?"} 不变，端口与凭据保留）`;
+      st.textContent = `显示名将由「${r.state.name}」更新为「${cfg.name}」：启动节点后自动生效`;
       st.className = "warn";
       return;
     }
@@ -418,7 +418,7 @@
     const idPart = r.registeredId ? `（id ${r.registeredId}）` : "";
     const regPart = r.state
       ? `已注册：${display}${idPart}（stcp，本机绑定 ${r.state.opencodeRemotePort}/${r.state.agentRemotePort}）`
-      : "未注册（保存配置后点「启动节点」）";
+      : "未注册";
     st.textContent = agentPart + " · " + regPart;
     st.className = r.agentRunning ? "ok" : "dim";
   }
