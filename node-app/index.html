@@ -727,13 +727,16 @@
       meta.textContent = nodeMetaText(n);
       const btns = document.createElement("div");
       btns.className = "btns nodeBtns";
-      for (const [label, act] of [["启动", "start"], ["停止", "stop"], ["重启", "restart"]]) {
+      for (const [label, act] of [["启动", "start"], ["停止", "stop"], ["重启", "restart"], ["关机", "poweroff"]]) {
         const b = document.createElement("button");
         b.className = "mini ghost";
         b.textContent = label;
         b.onclick = async () => {
+          if (act === "poweroff" && !confirm(`对「${n.name || n.id}」执行远程关机？\n机器将断电下线，且无法远程再次开机（需人工按电源键）。`)) return;
           const res = await ipcRenderer.invoke("mesh:master:action", { name: n.id || n.name, action: act });
-          if (res.ok) {
+          if (act === "poweroff" && res.ok) {
+            setOp(`${n.name || n.id} 关机指令已下发（约 ${res.delaySec ?? 3} 秒后断电）`, "warn");
+          } else if (res.ok) {
             const state = res.running === undefined ? "" : (res.running ? `（运行中 PID ${res.pid}）` : "（未运行）");
             setOp(`${n.name || n.id} ${label}: 成功${state}`, "ok");
           } else {

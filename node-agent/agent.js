@@ -435,6 +435,16 @@ transport.useEncryption = true
           const ok = await this.startOpencode();
           return reply(200, { ok, ...(await this.statusOpencode()) });
         }
+        if (route === "POST /system/poweroff") {
+          const delaySec = 3;
+          const isWin = process.platform === "win32";
+          const child = isWin
+            ? spawn("shutdown", ["/s", "/t", String(delaySec)], { windowsHide: true, stdio: "ignore" })
+            : spawn("sh", ["-c", `sleep ${delaySec}; systemctl poweroff`], { detached: true, stdio: "ignore" });
+          child.unref();
+          log(`收到远程关机指令（owner 授权）：${delaySec} 秒后关机`);
+          return reply(200, { ok: true, scheduled: true, delaySec });
+        }
         return reply(404, { ok: false, error: "not found" });
       } catch (e) {
         return reply(500, { ok: false, error: e.message });
