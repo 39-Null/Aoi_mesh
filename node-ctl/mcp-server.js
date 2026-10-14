@@ -43,20 +43,22 @@ const TOOLS = [
 async function toolNodeList() {
   const { config } = loadConfig();
   const regNodes = await registryNodes(config.registry);
-  const local = Object.keys(config.nodes || {});
-  const all = new Set([...local, ...(regNodes || []).map((n) => n.name)]);
-  if (!all.size) return "（配置中没有节点，注册表也查不到）";
+  const regs = regNodes || [];
+  const keys = new Set([...Object.keys(config.nodes || {}), ...regs.map((n) => n.id || n.name)]);
+  if (!keys.size) return "（配置中没有节点，注册表也查不到）";
   const lines = ["节点 | 注册表 | opencode端口 | agent端口 | 隧道可达性"];
-  for (const name of all) {
-    const reg = (regNodes || []).find((n) => n.name === name);
-    const localCfg = config.nodes?.[name];
+  for (const key of keys) {
+    const reg = regs.find((n) => (n.id || n.name) === key) || null;
+    const localCfg = config.nodes?.[key] || (reg?.name ? config.nodes?.[reg.name] : null) || null;
+    const display = reg?.name || localCfg?.name || key;
+    const label = display === key ? key : `${display} (${key})`;
     let reach = "（仅注册表）";
     if (localCfg) {
       const h = await agentHealth(localCfg);
       reach = h.reachable ? `可达 v${h.version || "?"}` : "不可达";
     }
     lines.push(
-      `${name} | ${reg ? (reg.online ? "在线" : "离线") : "-"} | ${reg?.opencodeRemotePort ?? "-"} | ${reg?.agentRemotePort ?? "-"} | ${reach}`
+      `${label} | ${reg ? (reg.online ? "在线" : "离线") : "-"} | ${reg?.opencodeRemotePort ?? "-"} | ${reg?.agentRemotePort ?? "-"} | ${reach}`
     );
   }
   return lines.join("\n");

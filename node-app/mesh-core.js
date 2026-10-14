@@ -311,7 +311,14 @@ async function getNodeConfig(root) {
     agentRunning = !!agentPid;
   }
   const renamed = !!(state?.name && cfg?.name && state.name !== cfg.name);
-  return { cfg, state, agentRunning, agentPid, agentDir: dir, rootFound, renamed };
+  let registeredId = state?.id || null;
+  if (!registeredId && state?.token) {
+    const mcfg = getMasterConfig(root);
+    for (const [k, v] of Object.entries(mcfg?.nodes || {})) {
+      if (v?.agentToken === state.token) { registeredId = k; break; }
+    }
+  }
+  return { cfg, state, agentRunning, agentPid, agentDir: dir, rootFound, renamed, registeredId };
 }
 
 function saveNodeConfig(root, cfg) {
@@ -441,11 +448,14 @@ async function syncMasterNodes(root) {
   if (!nodes) return { ok: false, error: "无法获取节点列表（检查 Hub 连通性与本机节点凭据）" };
   const map = cfg.nodes || {};
   const prevNames = new Set(Object.keys(map));
-  const pending = new Set(nodes.map((n) => n.name));
+  const pending = new Set(nodes.map((n) => n.id || n.name));
   for (const n of nodes) {
-    const prev = map[n.name] || {};
-    map[n.name] = {
+    const key = n.id || n.name;
+    const prev = map[key] || (n.name && n.name !== key ? map[n.name] : null) || {};
+    if (n.name && n.name !== key && map[n.name] && !map[key]) delete map[n.name];
+    map[key] = {
       ...prev,
+      name: n.name || key,
       agentUrl: prev.agentUrl || `http://127.0.0.1:${n.agentRemotePort}`,
       opencodeUrl: prev.opencodeUrl || `http://127.0.0.1:${n.opencodeRemotePort}`,
       agentToken: n.token || prev.agentToken || "",
@@ -478,7 +488,7 @@ async function pruneMasterNodes(root) {
   const cfg = getMasterConfig(root) || {};
   const reg = await registryNodes(root, cfg.registry);
   if (!reg) return { ok: false, error: "无法获取注册表节点（检查 Hub 连接）" };
-  const alive = new Set(reg.map((n) => n.name));
+  const alive = new Set(reg.map((n) => n.id || n.name));
   const removed = [];
   for (const k of Object.keys(cfg.nodes || {})) {
     if (!alive.has(k)) {
@@ -494,18 +504,20 @@ async function listNodesMerged(root) {
   const cfg = getMasterConfig(root) || {};
   const regNodes = await registryNodes(root, cfg.registry);
   const local = cfg.nodes || {};
-  const names = new Set([...Object.keys(local), ...(regNodes || []).map((n) => n.name)]);
+  const regs = regNodes || [];
+  const keys = new Set([...Object.keys(local), ...regs.map((n) => n.id || n.name)]);
   const out = [];
-  for (const name of names) {
-    const reg = (regNodes || []).find((n) => n.name === name) || null;
-    const loc = local[name] || null;
+  for (const key of keys) {
+    const reg = regs.find((n) => (n.id || n.name) === key) || null;
+    const loc = local[key] || (reg?.name ? local[reg.name] : null) || null;
     let reach = null;
     if (loc?.agentUrl) {
       const r = await httpJson("GET", loc.agentUrl.replace(/\/+$/, "") + "/health", undefined, {}, 4000);
       reach = r.status === 200 && r.json?.ok ? { ok: true, version: r.json.version } : { ok: false };
     }
     out.push({
-      name,
+      id: key,
+      name: reg?.name || loc?.name || key,
       online: reg ? reg.online : null,
       opencodePort: reg?.opencodeRemotePort ?? null,
       agentPort: reg?.agentRemotePort ?? null,
@@ -556,7 +568,12 @@ async function startNodeFull(root) {
 
 async function nodeAction(root, name, action) {
   const cfg = getMasterConfig(root) || {};
-  const loc = (cfg.nodes || {})[name];
+  const nodes = cfg.nodes || {};
+  let loc = nodes[name];
+  if (!loc) {
+    const hit = Object.entries(nodes).find(([, v]) => v?.name === name);
+    if (hit) loc = hit[1];
+  }
   if (!loc?.agentUrl) return { ok: false, error: `节点 "${name}" 未在 nodes.json 配置` };
   const endpoint = action === "status" ? "/opencode/status" : `/opencode/${action}`;
   const method = action === "status" ? "GET" : "POST";
@@ -597,26 +614,27 @@ async function generateVisitors(root) {
   const frps = await registryFrps(root, cfg.registry);
   if (!frps) return { ok: false, error: "无法获取 frps 信息" };
   const wanted = Object.keys(cfg.nodes || {});
-  const list = nodes.filter((n) => (wanted.length ? wanted.includes(n.name) : true));
+  const list = nodes.filter((n) => (wanted.length ? wanted.includes(n.id || n.name) : true));
   if (!list.length) return { ok: false, error: "注册表中没有可用节点" };
   const sections = [];
   for (const n of list) {
+    const key = n.id || n.name;
     if (!n.stcpSecret) {
       return { ok: false, error: `节点 ${n.name} 缺少 stcp 密钥（需在该节点重新注册）` };
     }
     sections.push(`[[visitors]]
-name = "${n.name}_opencode-visitor"
+name = "${key}_opencode-visitor"
 type = "stcp"
-serverName = "${n.name}_opencode"
+serverName = "${key}_opencode"
 secretKey = "${n.stcpSecret}"
 bindAddr = "127.0.0.1"
 bindPort = ${n.opencodeRemotePort}
 transport.useEncryption = true
 
 [[visitors]]
-name = "${n.name}_agent-visitor"
+name = "${key}_agent-visitor"
 type = "stcp"
-serverName = "${n.name}_agent"
+serverName = "${key}_agent"
 secretKey = "${n.stcpSecret}"
 bindAddr = "127.0.0.1"
 bindPort = ${n.agentRemotePort}
@@ -633,11 +651,11 @@ ${sections.join("\n\n")}
   const target = path.join(root, "node-ctl", "visitors.toml");
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, toml);
-  return {
-    ok: true,
-    target,
-    mapping: list.map((n) => ({ name: n.name, opencode: n.opencodeRemotePort, agent: n.agentRemotePort })),
-  };
+    return {
+      ok: true,
+      target,
+      mapping: list.map((n) => ({ id: n.id || n.name, name: n.name, opencode: n.opencodeRemotePort, agent: n.agentRemotePort })),
+    };
 }
 
 function firstBindPort(root) {
@@ -743,6 +761,10 @@ function applyMasterImport(root, raw) {
     throw new Error("导入配置缺少 Hub 地址或管理密钥");
   }
   const cfg = getMasterConfig(root) || {};
+  const mergedNodes = { ...(cfg.nodes || {}), ...(data.nodes || {}) };
+  for (const [k, v] of Object.entries(mergedNodes)) {
+    if (v && typeof v === "object" && !v.name) v.name = k;
+  }
   const merged = {
     registry: {
       address: String(data.registry.address),
@@ -750,7 +772,7 @@ function applyMasterImport(root, raw) {
       adminToken: String(data.registry.adminToken),
     },
     fleetPassword: data.fleetPassword || cfg.fleetPassword || "",
-    nodes: { ...(cfg.nodes || {}), ...(data.nodes || {}) },
+    nodes: mergedNodes,
   };
   saveMasterConfig(root, merged);
   return {
@@ -767,11 +789,12 @@ async function fleetSnippet(root) {
   const regNodes = await registryNodes(root, cfg.registry);
   const names = Object.keys(cfg.nodes || {});
   if (!names.length) return { ok: false, error: "没有节点" };
-  const nodeArgs = names.map((name) => {
-    const loc = cfg.nodes[name];
-    if (loc.opencodeUrl) return `"--node", "${name}=${loc.opencodeUrl}"`;
-    const reg = (regNodes || []).find((n) => n.name === name);
-    if (reg) return `"--node", "${name}=http://127.0.0.1:${reg.opencodeRemotePort}"`;
+  const nodeArgs = names.map((key) => {
+    const loc = cfg.nodes[key];
+    const display = loc.name || key;
+    if (loc.opencodeUrl) return `"--node", "${display}=${loc.opencodeUrl}"`;
+    const reg = (regNodes || []).find((n) => (n.id || n.name) === key || n.name === display);
+    if (reg) return `"--node", "${display}=http://127.0.0.1:${reg.opencodeRemotePort}"`;
     return null;
   });
   if (nodeArgs.includes(null)) return { ok: false, error: "无法确定部分节点地址（配置 registry 或 opencodeUrl）" };

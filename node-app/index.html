@@ -71,6 +71,19 @@
   .nrow:last-child { border-bottom: none; }
   .ninfo { font-size: 12px; }
   .nbtns { display: flex; gap: 6px; }
+  /* 节点卡片 */
+  .nodeItem { padding: 10px 0 12px; border-bottom: 1px solid #262a30; }
+  .nodeItem:last-child { border-bottom: none; padding-bottom: 2px; }
+  .nodeHead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .nodeName { font-size: 14px; font-weight: 600; color: #e8eaed; }
+  .badge { font-size: 11px; padding: 1px 8px; border-radius: 9px; background: #232936; color: #9aa4b2; flex: none; }
+  .badge.ok { color: #4cc38a; }
+  .badge.bad { color: #e5534b; }
+  .nodeId { font-size: 11px; color: #7d8695; font-family: Consolas, monospace; margin-left: auto; }
+  .nodeMeta { font-size: 12px; color: #8a94a6; margin: 5px 0 8px; }
+  .nodeBtns { margin: 0; }
+  .idchip { font-size: 12px; color: #7d8695; font-family: Consolas, monospace; user-select: text; padding-top: 3px; }
+  .idchip.set { color: #c6ccd6; }
   .fl { display: flex; align-items: center; gap: 8px; padding: 4px 0; flex-wrap: wrap; }
   .fl label { color: #b9bec7; flex: none; min-width: 84px; font-size: 12px; }
 </style>
@@ -143,7 +156,8 @@
 
     <section class="card">
       <div class="cardTitle">节点配置（本机加入网络）</div>
-      <div class="fl"><label>节点名</label><input id="inpNodeName" class="grow" type="text" placeholder="全网唯一，字母数字-_" /></div>
+      <div class="fl"><label>节点名</label><input id="inpNodeName" class="grow" type="text" placeholder="显示名，可随时修改" /></div>
+      <div class="fl"><label>注册 id</label><span id="nodeIdChip" class="idchip">…</span></div>
       <div class="fl"><label>加入密钥</label><input id="inpJoinKey" class="grow" type="text" placeholder="一次性密钥（留空表示不修改）" /></div>
       <div class="fl"><label>opencode</label><input id="inpOcPort" class="short" type="number" placeholder="端口 4096" /><input id="inpOcPass" class="grow" type="password" placeholder="新密码（留空=不修改）" /></div>
       <div class="fl"><label>确认密码</label><input id="inpOcPass2" class="grow" type="password" placeholder="再次输入新密码（仅修改时填写）" /><span id="ocPassHint" class="dim"></span></div>
@@ -380,6 +394,14 @@
     const m = (await ipcRenderer.invoke("mesh:master:get")) || {};
     $("inpFleetPass").value = m.fleetPassword || "";
     $("inpRegToken").value = m.registry?.adminToken || "";
+    const chip = $("nodeIdChip");
+    if (r.registeredId) {
+      chip.textContent = `${r.registeredId}（唯一 · 不可修改）`;
+      chip.className = "idchip set";
+    } else {
+      chip.textContent = "（未注册：首次注册时确定，此后不可修改）";
+      chip.className = "idchip";
+    }
     const st = $("nodeState");
     if (r.rootFound === false) {
       st.textContent = `未找到仓库内容（${r.agentDir}）。便携包请通过 start-app.sh 启动；开发场景请将 App 放在仓库 node-app/ 目录内；或设置环境变量 OPENCODE_MESH_ROOT 指向仓库根目录`;
@@ -387,13 +409,15 @@
       return;
     }
     if (r.renamed) {
-      st.textContent = `节点名由「${r.state.name}」变更为「${cfg.name}」：启动节点后将自动向 Hub 迁移（保留端口与凭据，无需新密钥）`;
+      st.textContent = `显示名将由「${r.state.name}」更新为「${cfg.name}」：启动节点后自动生效（注册 id ${r.registeredId || "?"} 不变，端口与凭据保留）`;
       st.className = "warn";
       return;
     }
     const agentPart = r.agentRunning ? `agent 运行中（PID ${r.agentPid}）` : "agent 未运行";
+    const display = r.state?.name || cfg.name || "?";
+    const idPart = r.registeredId ? `（id ${r.registeredId}）` : "";
     const regPart = r.state
-      ? `已注册：${cfg.name || "?"}（stcp，本机绑定 ${r.state.opencodeRemotePort}/${r.state.agentRemotePort}）`
+      ? `已注册：${display}${idPart}（stcp，本机绑定 ${r.state.opencodeRemotePort}/${r.state.agentRemotePort}）`
       : "未注册（保存配置后点「启动节点」）";
     st.textContent = agentPart + " · " + regPart;
     st.className = r.agentRunning ? "ok" : "dim";
@@ -620,32 +644,48 @@
       return;
     }
     for (const n of r.nodes) {
-      const row = document.createElement("div");
-      row.className = "nrow";
-      const info = document.createElement("div");
-      info.className = "ninfo";
-      const regPart = n.online === null ? "注册表:-" : (n.online ? "注册表:在线" : "注册表:离线");
-      const tunPart = n.reachable ? (n.reachable.ok ? `隧道:可达 v${n.reachable.version || "?"}` : "隧道:不可达") : "隧道:未配置";
-      info.textContent = `${n.name} · ${regPart} · ${tunPart}`;
+      const item = document.createElement("div");
+      item.className = "nodeItem";
+      const head = document.createElement("div");
+      head.className = "nodeHead";
+      const nm = document.createElement("span");
+      nm.className = "nodeName";
+      nm.textContent = n.name || n.id;
+      const badge = document.createElement("span");
+      const online = n.online;
+      badge.className = "badge " + (online === true ? "ok" : online === false ? "bad" : "");
+      badge.textContent = online === true ? "在线" : online === false ? "离线" : "仅本地";
+      const idtag = document.createElement("span");
+      idtag.className = "nodeId";
+      idtag.textContent = "id: " + (n.id || n.name);
+      head.append(nm, badge, idtag);
+      const meta = document.createElement("div");
+      meta.className = "nodeMeta";
+      const parts = [];
+      if (n.opencodePort) parts.push(`opencode 127.0.0.1:${n.opencodePort}`);
+      if (n.agentPort) parts.push(`agent 127.0.0.1:${n.agentPort}`);
+      if (n.reachable) parts.push(n.reachable.ok ? `隧道可达 v${n.reachable.version || "?"}` : "隧道不可达");
+      else parts.push("隧道未配置");
+      meta.textContent = parts.join(" · ");
       const btns = document.createElement("div");
-      btns.className = "nbtns";
+      btns.className = "btns nodeBtns";
       for (const [label, act] of [["状态", "status"], ["启动", "start"], ["停止", "stop"], ["重启", "restart"]]) {
         const b = document.createElement("button");
         b.className = "mini ghost";
         b.textContent = label;
         b.onclick = async () => {
-          const res = await ipcRenderer.invoke("mesh:master:action", { name: n.name, action: act });
+          const res = await ipcRenderer.invoke("mesh:master:action", { name: n.id || n.name, action: act });
           if (res.ok) {
             const state = res.running === undefined ? "" : (res.running ? `（运行中 PID ${res.pid}）` : "（未运行）");
-            setOp(`${n.name} ${label}: 成功${state}`, "ok");
+            setOp(`${n.name || n.id} ${label}: 成功${state}`, "ok");
           } else {
-            setOp(`${n.name} ${label}: 失败 — ${res.error}`, "bad");
+            setOp(`${n.name || n.id} ${label}: 失败 — ${res.error}`, "bad");
           }
         };
         btns.append(b);
       }
-      row.append(info, btns);
-      box.append(row);
+      item.append(head, meta, btns);
+      box.append(item);
     }
   }
 

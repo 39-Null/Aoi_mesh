@@ -36,6 +36,21 @@ function save() {
 }
 if (!fs.existsSync(DATA_FILE)) save();
 
+// 迁移历史数据：为节点补 id（id = 首次注册名，唯一且不可变）；名称（name）为可变显示标签
+{
+  let migrated = false;
+  const byId = {};
+  for (const k of Object.keys(data.nodes || {})) {
+    const n = data.nodes[k];
+    if (!n.id) { n.id = n.name || k; migrated = true; }
+    if (!n.name) { n.name = n.id; migrated = true; }
+    if (k !== n.id) migrated = true;
+    byId[n.id] = n;
+  }
+  data.nodes = byId;
+  if (migrated) save();
+}
+
 function usedPorts() {
   const set = new Set();
   for (const n of Object.values(data.nodes)) {
@@ -81,11 +96,6 @@ function isAdmin(req) {
   return req.headers["x-admin-token"] === ADMIN_TOKEN;
 }
 
-function isNode(headers, name) {
-  const node = data.nodes[name];
-  return node && headers["x-node-token"] === node.token;
-}
-
 /** 平权：任意已注册节点的凭据均视为有效管理凭据（admin 兼容保留） */
 function isAnyNodeToken(headers) {
   const t = headers["x-node-token"];
@@ -95,6 +105,27 @@ function isAnyNodeToken(headers) {
 
 function canManage(req) {
   return isAdmin(req) || isAnyNodeToken(req.headers);
+}
+
+function findNodeByToken(token) {
+  if (!token) return null;
+  return Object.values(data.nodes).find((n) => n.token === token) || null;
+}
+
+/** 名称冲突检查：名称需全网唯一（不含自身 id）；id 与 name 均占用唯一命名空间 */
+function nameTaken(name, exceptId) {
+  return Object.values(data.nodes).some((n) => n.id !== exceptId && (n.id === name || n.name === name));
+}
+
+function publicNode(n) {
+  return {
+    id: n.id,
+    name: n.name,
+    token: n.token,
+    stcpSecret: n.stcpSecret,
+    opencodeRemotePort: n.opencodeRemotePort,
+    agentRemotePort: n.agentRemotePort,
+  };
 }
 
 const server = http.createServer(async (req, res) => {
@@ -138,36 +169,42 @@ const server = http.createServer(async (req, res) => {
       }
       const keyRec = data.keys[joinKey];
       if (!keyRec) return json(res, 403, { ok: false, error: "invalid join key" });
-      if (keyRec.usedBy && keyRec.usedBy !== name && data.nodes[keyRec.usedBy]) {
-        return json(res, 403, { ok: false, error: "join key already used by " + keyRec.usedBy });
+      // 已绑定：沿用原身份（凭同一密钥重装/恢复；可同步更新显示名）
+      if (keyRec.usedBy && data.nodes[keyRec.usedBy]) {
+        const entry = data.nodes[keyRec.usedBy];
+        if (name !== entry.name && !nameTaken(name, entry.id)) entry.name = name;
+        entry.lastSeen = new Date().toISOString();
+        save();
+        return json(res, 200, {
+          ok: true,
+          restored: true,
+          node: publicNode(entry),
+          frps: { addr: FRPS_ADDR, port: FRPS_PORT, token: data.frpToken },
+          heartbeatIntervalSec: 60,
+        });
       }
-      let node = data.nodes[name];
-      if (!node) {
-        const pair = allocatePortPair();
-        if (!pair) return json(res, 507, { ok: false, error: "no free port pair in range" });
-        node = {
-          name,
-          createdAt: new Date().toISOString(),
-          token: crypto.randomBytes(24).toString("hex"),
-          stcpSecret: crypto.randomBytes(16).toString("hex"),
-          opencodeRemotePort: pair[0],
-          agentRemotePort: pair[1],
-        };
-        data.nodes[name] = node;
+      // 新注册：id = 首次注册名（不可变）；名称/ID 全网唯一，防冒名（不得复用他人身份）
+      if (data.nodes[name] || nameTaken(name, null)) {
+        return json(res, 409, { ok: false, error: "name already registered (id taken); choose another name" });
       }
-      if (!node.stcpSecret) node.stcpSecret = crypto.randomBytes(16).toString("hex");
-      node.lastSeen = new Date().toISOString();
-      keyRec.usedBy = name;
+      const pair = allocatePortPair();
+      if (!pair) return json(res, 507, { ok: false, error: "no free port pair in range" });
+      const entry = {
+        id: name,
+        name,
+        createdAt: new Date().toISOString(),
+        token: crypto.randomBytes(24).toString("hex"),
+        stcpSecret: crypto.randomBytes(16).toString("hex"),
+        opencodeRemotePort: pair[0],
+        agentRemotePort: pair[1],
+        lastSeen: new Date().toISOString(),
+      };
+      data.nodes[entry.id] = entry;
+      keyRec.usedBy = entry.id;
       save();
       return json(res, 200, {
         ok: true,
-        node: {
-          name: node.name,
-          token: node.token,
-          stcpSecret: node.stcpSecret,
-          opencodeRemotePort: node.opencodeRemotePort,
-          agentRemotePort: node.agentRemotePort,
-        },
+        node: publicNode(entry),
         frps: { addr: FRPS_ADDR, port: FRPS_PORT, token: data.frpToken },
         heartbeatIntervalSec: 60,
       });
@@ -180,33 +217,21 @@ const server = http.createServer(async (req, res) => {
       if (!name || !/^[a-zA-Z0-9_-]{2,32}$/.test(name)) {
         return json(res, 400, { ok: false, error: "invalid name" });
       }
-      const entry = token ? Object.values(data.nodes).find((n) => n.token === token) : null;
+      const entry = findNodeByToken(token);
       if (!entry) return json(res, 401, { ok: false, error: "invalid token" });
       const oldName = entry.name;
-      const existing = data.nodes[name];
-      if (existing && existing.token !== token) {
-        return json(res, 409, { ok: false, error: "name already used by another node" });
-      }
-      if (oldName !== name) {
-        entry.name = name;
-        data.nodes[name] = entry;
-        delete data.nodes[oldName];
-        for (const k of Object.keys(data.keys)) {
-          if (data.keys[k].usedBy === oldName) data.keys[k].usedBy = name;
+      if (name !== entry.name) {
+        if (nameTaken(name, entry.id)) {
+          return json(res, 409, { ok: false, error: "name already used by another node" });
         }
+        entry.name = name;
       }
       entry.lastSeen = new Date().toISOString();
       save();
       return json(res, 200, {
         ok: true,
-        renamedFrom: oldName !== name ? oldName : null,
-        node: {
-          name: entry.name,
-          token: entry.token,
-          stcpSecret: entry.stcpSecret,
-          opencodeRemotePort: entry.opencodeRemotePort,
-          agentRemotePort: entry.agentRemotePort,
-        },
+        renamedFrom: oldName !== entry.name ? oldName : null,
+        node: publicNode(entry),
         frps: { addr: FRPS_ADDR, port: FRPS_PORT, token: data.frpToken },
         heartbeatIntervalSec: 60,
       });
@@ -215,11 +240,10 @@ const server = http.createServer(async (req, res) => {
     if (route === "POST /heartbeat") {
       const body = await readBody(req);
       if (body === null) return json(res, 400, { ok: false, error: "bad json" });
-      if (!body.name || !isNode(req.headers, body.name)) {
-        return json(res, 401, { ok: false, error: "unauthorized" });
-      }
-      data.nodes[body.name].lastSeen = new Date().toISOString();
-      if (body.version) data.nodes[body.name].version = body.version;
+      const entry = findNodeByToken(req.headers["x-node-token"]);
+      if (!entry) return json(res, 401, { ok: false, error: "unauthorized" });
+      entry.lastSeen = new Date().toISOString();
+      if (body.version) entry.version = body.version;
       save();
       return json(res, 200, { ok: true });
     }
@@ -227,6 +251,7 @@ const server = http.createServer(async (req, res) => {
     if (route === "GET /nodes") {
       if (!canManage(req)) return json(res, 401, { ok: false, error: "unauthorized" });
       const list = Object.values(data.nodes).map((n) => ({
+        id: n.id,
         name: n.name,
         lastSeen: n.lastSeen || null,
         online: n.lastSeen ? Date.now() - new Date(n.lastSeen).getTime() < 150_000 : false,
@@ -243,13 +268,15 @@ const server = http.createServer(async (req, res) => {
       if (!canManage(req)) return json(res, 401, { ok: false, error: "unauthorized" });
       const body = await readBody(req);
       if (body === null) return json(res, 400, { ok: false, error: "bad json" });
-      if (body.name && data.nodes[body.name]) {
-        delete data.nodes[body.name];
+      const target = body.id || body.name;
+      const entry = data.nodes[target] || Object.values(data.nodes).find((n) => n.name === target) || null;
+      if (entry) {
+        delete data.nodes[entry.id];
         for (const k of Object.keys(data.keys)) {
-          if (data.keys[k].usedBy === body.name) delete data.keys[k];
+          if (data.keys[k].usedBy === entry.id) delete data.keys[k];
         }
         save();
-        return json(res, 200, { ok: true, revoked: body.name });
+        return json(res, 200, { ok: true, revoked: entry.id });
       }
       return json(res, 404, { ok: false, error: "node not found" });
     }

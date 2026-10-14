@@ -17,14 +17,23 @@ function loadConfig(explicit) {
   throw new Error(`找不到配置文件（尝试过：${candidates.join(", ")}）\n可参考 configs/nodes.example.json 创建 nodes.json`);
 }
 
+/** 节点解析：支持注册 id（nodes.json 键）或显示名（entry.name） */
+function resolveNodeEntry(config, nameOrId) {
+  const nodes = config.nodes || {};
+  if (nodes[nameOrId]) return { key: nameOrId, node: nodes[nameOrId] };
+  const hit = Object.entries(nodes).find(([, v]) => v?.name === nameOrId);
+  if (hit) return { key: hit[0], node: hit[1] };
+  return null;
+}
+
 function getNode(config, name) {
-  const node = config.nodes?.[name];
-  if (!node) {
-    const names = Object.keys(config.nodes || {});
+  const hit = resolveNodeEntry(config, name);
+  if (!hit) {
+    const names = Object.entries(config.nodes || {}).map(([k, v]) => (v?.name && v.name !== k ? `${k}(${v.name})` : k));
     throw new Error(`未配置节点 "${name}"。已配置：${names.length ? names.join(", ") : "（无）"}`);
   }
-  if (!node.agentUrl) throw new Error(`节点 "${name}" 缺少 agentUrl`);
-  return node;
+  if (!hit.node.agentUrl) throw new Error(`节点 "${name}" 缺少 agentUrl`);
+  return hit.node;
 }
 
 /* ==================== 平权凭据解析（与本机节点共享） ==================== */
@@ -192,8 +201,10 @@ async function opencodeApi(nodeCfg, method, endpoint, body, timeoutMs = 30000) {
 
 /** 按 aoi-mesh 协议派发任务（复用节点会话；解析回执块） */
 async function dispatchToNode(configPath, config, nodeName, body, opts = {}) {
-  const node = config.nodes?.[nodeName];
-  if (!node?.opencodeUrl) throw new Error(`节点 "${nodeName}" 缺少 opencodeUrl（先在 App「主控」页同步节点）`);
+  const hit = resolveNodeEntry(config, nodeName);
+  if (!hit?.node?.opencodeUrl) throw new Error(`节点 "${nodeName}" 缺少 opencodeUrl（先在 App「主控」页同步节点）`);
+  const nodeKey = hit.key;
+  const node = hit.node;
   const nodeCfg = { ...node, opencodePassword: config.fleetPassword || "" };
   if (!nodeCfg.opencodePassword) throw new Error("缺少统一密码（config.fleetPassword）");
 
@@ -230,7 +241,7 @@ async function dispatchToNode(configPath, config, nodeName, body, opts = {}) {
   const parsed = parseResultBlock(texts);
 
   if (configPath) {
-    config.nodes[nodeName] = { ...node, sessionId };
+    config.nodes[nodeKey] = { ...node, sessionId };
     try {
       saveConfigFile(configPath, config);
     } catch {}
@@ -250,6 +261,7 @@ async function dispatchToNode(configPath, config, nodeName, body, opts = {}) {
 module.exports = {
   loadConfig,
   getNode,
+  resolveNodeEntry,
   agentCall,
   agentHealth,
   registryNodes,

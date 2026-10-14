@@ -375,9 +375,9 @@ ipcMain.handle("mesh:master:import", async () => {
 
 function createWindow() {
   const win = new BrowserWindow({
-    width: 500,
-    height: 700,
-    minWidth: 460,
+    width: 620,
+    height: 720,
+    minWidth: 560,
     minHeight: 560,
     resizable: true,
     autoHideMenuBar: true,

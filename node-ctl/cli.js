@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const fs = require("fs");
 const path = require("path");
-const { loadConfig, getNode, agentCall, agentHealth, registryNodes, registryFrps, dispatchToNode } = require("./lib");
+const { loadConfig, getNode, resolveNodeEntry, agentCall, agentHealth, registryNodes, registryFrps, dispatchToNode } = require("./lib");
 
 const USAGE = `opencode-mesh node-ctl
 
@@ -40,16 +40,17 @@ function parseArgs(argv) {
 
 async function cmdList(config) {
   const regNodes = await registryNodes(config.registry);
-  const local = Object.keys(config.nodes || {});
-  const all = new Set([...local, ...(regNodes || []).map((n) => n.name)]);
-  if (!all.size) {
+  const regs = regNodes || [];
+  const keys = new Set([...Object.keys(config.nodes || {}), ...regs.map((n) => n.id || n.name)]);
+  if (!keys.size) {
     console.log("（配置中没有节点，注册表也查不到）");
     return;
   }
-  console.log("节点            在线      绑定端口(open/agent)  说明");
-  for (const name of all) {
-    const reg = (regNodes || []).find((n) => n.name === name);
-    const localCfg = config.nodes?.[name];
+  console.log("节点(id)          显示名          在线     绑定端口(open/agent)  说明");
+  for (const key of keys) {
+    const reg = regs.find((n) => (n.id || n.name) === key) || null;
+    const localCfg = config.nodes?.[key] || (reg?.name ? config.nodes?.[reg.name] : null) || null;
+    const display = reg?.name || localCfg?.name || key;
     let reach = "";
     if (localCfg) {
       const h = await agentHealth(localCfg);
@@ -58,7 +59,7 @@ async function cmdList(config) {
       reach = "（仅注册表）";
     }
     console.log(
-      `${name.padEnd(15)} ${(reg ? (reg.online ? "在线" : "离线") : "-").padEnd(8)} ${String((reg?.opencodeRemotePort ?? "-") + "/" + (reg?.agentRemotePort ?? "-")).padEnd(21)} ${reach}`
+      `${key.padEnd(17)} ${display.padEnd(15)} ${(reg ? (reg.online ? "在线" : "离线") : "-").padEnd(8)} ${String((reg?.opencodeRemotePort ?? "-") + "/" + (reg?.agentRemotePort ?? "-")).padEnd(21)} ${reach}`
     );
   }
 }
@@ -100,10 +101,12 @@ async function cmdFleetConfig(config) {
     return;
   }
   const regNodes = await registryNodes(config.registry);
-  const nodeArgs = names.map((name) => {
-    if (config.nodes[name].opencodeUrl) return `"--node", "${name}=${config.nodes[name].opencodeUrl}"`;
-    const reg = (regNodes || []).find((n) => n.name === name);
-    if (reg) return `"--node", "${name}=http://127.0.0.1:${reg.opencodeRemotePort}"`;
+  const nodeArgs = names.map((key) => {
+    const loc = config.nodes[key];
+    const display = loc.name || key;
+    if (loc.opencodeUrl) return `"--node", "${display}=${loc.opencodeUrl}"`;
+    const reg = (regNodes || []).find((n) => (n.id || n.name) === key || n.name === display);
+    if (reg) return `"--node", "${display}=http://127.0.0.1:${reg.opencodeRemotePort}"`;
     return null;
   });
   if (nodeArgs.includes(null)) {
@@ -142,8 +145,9 @@ async function cmdVisitorsConfig(config, outPath) {
     process.exitCode = 1;
     return;
   }
-  const wanted = Object.keys(config.nodes || {});
-  const nodes = regNodes.filter((n) => (wanted.length ? wanted.includes(n.name) : true));
+  const wanted = new Set(Object.keys(config.nodes || {}));
+  const wantedNames = new Set(Object.values(config.nodes || {}).map((v) => v?.name).filter(Boolean));
+  const nodes = regNodes.filter((n) => (!wanted.size || wanted.has(n.id || n.name) || wantedNames.has(n.name)));
   if (!nodes.length) {
     console.error("没有可用节点（注册表中无节点，或本地配置未包含任何注册表节点）");
     process.exitCode = 1;
@@ -151,24 +155,25 @@ async function cmdVisitorsConfig(config, outPath) {
   }
   const sections = [];
   for (const n of nodes) {
+    const key = n.id || n.name;
     if (!n.stcpSecret) {
       console.error(`节点 ${n.name} 缺少 stcpSecret（需要在节点上重新注册：删除 node-agent/data/state.json 后重启 agent）`);
       process.exitCode = 1;
       return;
     }
     sections.push(`[[visitors]]
-name = "${n.name}_opencode-visitor"
+name = "${key}_opencode-visitor"
 type = "stcp"
-serverName = "${n.name}_opencode"
+serverName = "${key}_opencode"
 secretKey = "${n.stcpSecret}"
 bindAddr = "127.0.0.1"
 bindPort = ${n.opencodeRemotePort}
 transport.useEncryption = true
 
 [[visitors]]
-name = "${n.name}_agent-visitor"
+name = "${key}_agent-visitor"
 type = "stcp"
-serverName = "${n.name}_agent"
+serverName = "${key}_agent"
 secretKey = "${n.stcpSecret}"
 bindAddr = "127.0.0.1"
 bindPort = ${n.agentRemotePort}
@@ -188,7 +193,7 @@ ${sections.join("\n\n")}
   console.log(`已生成 ${target}`);
   console.log("");
   for (const n of nodes) {
-    console.log(`- ${n.name}: opencode → 127.0.0.1:${n.opencodeRemotePort}；agent → 127.0.0.1:${n.agentRemotePort}`);
+    console.log(`- ${n.name}（id ${n.id || n.name}）: opencode → 127.0.0.1:${n.opencodeRemotePort}；agent → 127.0.0.1:${n.agentRemotePort}`);
   }
   console.log("");
   console.log("启动 visitor（示例）：");

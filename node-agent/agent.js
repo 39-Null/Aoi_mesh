@@ -188,7 +188,8 @@ class Agent {
     });
     if (res.status === 200 && res.json?.ok) {
       this.state = {
-        name: this.config.name,
+        id: res.json.node.id || res.json.node.name,
+        name: res.json.node.name || this.config.name,
         token: res.json.node.token,
         stcpSecret: res.json.node.stcpSecret,
         opencodeRemotePort: res.json.node.opencodeRemotePort,
@@ -196,7 +197,7 @@ class Agent {
         frps: res.json.frps,
       };
       saveState(this.state);
-      log(`注册成功：node=${this.config.name}（stcp 模式；主控绑定端口 ${this.state.opencodeRemotePort}/${this.state.agentRemotePort}）`);
+      log(`注册成功：node=${this.state.name}（id ${this.state.id}；stcp 模式；主控绑定端口 ${this.state.opencodeRemotePort}/${this.state.agentRemotePort}）`);
       return true;
     }
     log(`注册失败（${res.status}）：${res.json?.error || res.text}`);
@@ -215,6 +216,7 @@ class Agent {
       const old = res.json.renamedFrom || this.state.name || this.config.name;
       this.state = {
         ...this.state,
+        id: res.json.node.id || this.state.id || res.json.node.name,
         name: res.json.node.name,
         stcpSecret: res.json.node.stcpSecret || this.state.stcpSecret,
         opencodeRemotePort: res.json.node.opencodeRemotePort ?? this.state.opencodeRemotePort,
@@ -223,7 +225,7 @@ class Agent {
       };
       saveState(this.state);
       if (old !== res.json.node.name) {
-        log(`改名成功："${old}" → "${res.json.node.name}"（保留原身份与端口分配）`);
+        log(`改名成功（显示名）："${old}" → "${res.json.node.name}"（注册 id ${this.state.id} 不变，保留端口与凭据）`);
       }
       return "ok";
     }
@@ -275,6 +277,7 @@ class Agent {
 
   writeFrpcConfig() {
     const { frps, stcpSecret } = this.state;
+    const id = this.state.id || this.config.name;
     const opencodePort = this.config.opencode.port;
     const agentPort = this.config.agent.port;
     const toml = `serverAddr = "${frps.addr}"
@@ -283,8 +286,9 @@ auth.method = "token"
 auth.token = "${frps.token}"
 
 # stcp：服务不暴露公网端口，主控侧用 visitor + secretKey 接入
+# 代理名使用不可变的注册 id（改名不影响隧道）
 [[proxies]]
-name = "${this.config.name}_opencode"
+name = "${id}_opencode"
 type = "stcp"
 secretKey = "${stcpSecret}"
 localIP = "127.0.0.1"
@@ -292,7 +296,7 @@ localPort = ${opencodePort}
 transport.useEncryption = true
 
 [[proxies]]
-name = "${this.config.name}_agent"
+name = "${id}_agent"
 type = "stcp"
 secretKey = "${stcpSecret}"
 localIP = "127.0.0.1"
@@ -445,7 +449,7 @@ transport.useEncryption = true
       const res = await httpJson(
         "POST",
         `${this.hubBase}/heartbeat`,
-        { name: this.config.name, version: VERSION },
+        { id: this.state.id || this.config.name, name: this.config.name, version: VERSION },
         { "X-Node-Token": this.state.token }
       );
       if (res.status === 401) log("心跳被拒绝（可能已被吊销）");
