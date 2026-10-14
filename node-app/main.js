@@ -353,15 +353,6 @@ ipcMain.handle("mesh:master:visitors:start", () => mesh.startVisitor(ROOT));
 ipcMain.handle("mesh:master:visitors:stop", () => mesh.stopVisitor(ROOT));
 ipcMain.handle("mesh:master:visitors:log", () => mesh.visitorLogTail(ROOT, 150));
 ipcMain.handle("mesh:master:fleet", () => mesh.fleetSnippet(ROOT));
-ipcMain.handle("mesh:master:genkey", async () => {
-  const r = await mesh.generateJoinKey(ROOT);
-  if (r.ok && r.key) {
-    try {
-      await clipboard.writeText(r.key);
-    } catch {}
-  }
-  return r;
-});
 ipcMain.handle("mesh:master:export", async () => {
   try {
     const payload = mesh.buildMasterExport(ROOT);

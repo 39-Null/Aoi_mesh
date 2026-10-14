@@ -188,6 +188,7 @@ class Agent {
     });
     if (res.status === 200 && res.json?.ok) {
       this.state = {
+        name: this.config.name,
         token: res.json.node.token,
         stcpSecret: res.json.node.stcpSecret,
         opencodeRemotePort: res.json.node.opencodeRemotePort,
@@ -203,6 +204,11 @@ class Agent {
   }
 
   async ensureRegistered() {
+    if (this.state?.name && this.config.name && this.state.name !== this.config.name) {
+      log(`节点名已由 "${this.state.name}" 变更为 "${this.config.name}"：本地旧注册状态不再适用，将以新名称重新注册（需要未被使用的加入密钥；若提示密钥已被使用，请先在 App 中执行「重置身份」并获取新密钥）`);
+      this.state = null;
+      try { saveState(null); } catch {}
+    }
     if (this.state?.token && this.state?.stcpSecret) return true;
     if (this.state?.token && !this.state?.stcpSecret) {
       log("本地状态缺少 stcpSecret（旧版 tcp 状态），尝试用现有 joinKey 重新注册…");

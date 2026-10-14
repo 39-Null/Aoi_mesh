@@ -107,7 +107,7 @@
     </div>
 
     <section class="card hidden" id="diagCard">
-      <div class="cardTitle">诊断结果</div>
+      <div class="cardTitle">诊断结果<span style="flex:1"></span><button id="btnDiagClose" class="mini ghost">收起</button></div>
       <div id="diagList"></div>
     </section>
 
@@ -117,6 +117,7 @@
         <span style="flex:1"></span>
         <button id="btnLogRefresh" class="mini ghost">刷新</button>
         <button id="btnLogOpen" class="mini ghost">目录</button>
+        <button id="btnLogClose" class="mini ghost">收起</button>
       </div>
       <pre class="logbox" id="logPre">…</pre>
     </section>
@@ -144,7 +145,8 @@
       <div class="cardTitle">节点配置（本机加入网络）</div>
       <div class="fl"><label>节点名</label><input id="inpNodeName" class="grow" type="text" placeholder="全网唯一，字母数字-_" /></div>
       <div class="fl"><label>加入密钥</label><input id="inpJoinKey" class="grow" type="text" placeholder="一次性密钥（留空表示不修改）" /></div>
-      <div class="fl"><label>opencode</label><input id="inpOcPort" class="short" type="number" placeholder="端口 4096" /><input id="inpOcPass" class="grow" type="password" placeholder="要修改密码：在此输入新值；留空=不修改" /><span id="ocPassHint" class="dim"></span></div>
+      <div class="fl"><label>opencode</label><input id="inpOcPort" class="short" type="number" placeholder="端口 4096" /><input id="inpOcPass" class="grow" type="password" placeholder="新密码（留空=不修改）" /></div>
+      <div class="fl"><label>确认密码</label><input id="inpOcPass2" class="grow" type="password" placeholder="再次输入新密码（仅修改时填写）" /><span id="ocPassHint" class="dim"></span></div>
       <div class="fl"><label>agent 端口</label><input id="inpAgentPort" class="short" type="number" placeholder="41999" /></div>
       <div class="fl"><label>frpc 路径</label><input id="inpFrpc" class="grow" type="text" placeholder="bin/frpc.exe（相对 node-agent 目录）" /></div>
       <div class="btns" style="margin-top:8px; margin-bottom:0;">
@@ -181,7 +183,7 @@
     </div>
 
     <section class="card hidden" id="agentLogCard">
-      <div class="cardTitle">agent 日志尾部</div>
+      <div class="cardTitle">agent 日志尾部<span style="flex:1"></span><button id="btnAgentLogClose" class="mini ghost">收起</button></div>
       <pre class="logbox" id="agentLogPre">…</pre>
     </section>
   </section>
@@ -194,7 +196,6 @@
         <button id="btnNodeSync" class="mini">同步节点（自动配置）</button>
         <button id="btnNodeListRefresh" class="mini ghost">刷新列表</button>
         <button id="btnNodePrune" class="mini ghost">清理失效节点</button>
-        <button id="btnMasterGenKey" class="mini">生成加入密钥</button>
       </div>
       <div id="nodeList" class="dim">（点击「同步节点」自动从注册中心拉取）</div>
     </section>
@@ -211,7 +212,7 @@
     </section>
 
     <section class="card hidden" id="visitorLogCard">
-      <div class="cardTitle">visitor 日志尾部</div>
+      <div class="cardTitle">visitor 日志尾部<span style="flex:1"></span><button id="btnVisLogClose" class="mini ghost">收起</button></div>
       <pre class="logbox" id="visitorLogPre">…</pre>
     </section>
 
@@ -220,7 +221,11 @@
       <div class="btns" style="margin-bottom:0;">
         <button id="btnFleet" class="mini">生成 fleet 配置片段</button>
       </div>
-      <pre class="logbox hidden" id="fleetPre"></pre>
+    </section>
+
+    <section class="card hidden" id="fleetCard">
+      <div class="cardTitle">fleet 配置片段<span style="flex:1"></span><button id="btnFleetClose" class="mini ghost">收起</button></div>
+      <pre class="logbox" id="fleetPre"></pre>
     </section>
   </section>
 
@@ -383,6 +388,11 @@
       st.className = "bad";
       return;
     }
+    if (r.renamed) {
+      st.textContent = `⚠ 节点名已变更（注册身份：${r.state.name} → 当前配置：${cfg.name}）：请点「重置身份」并填写新的加入密钥后重新启动节点`;
+      st.className = "warn";
+      return;
+    }
     const agentPart = r.agentRunning ? `agent 运行中（PID ${r.agentPid}）` : "agent 未运行";
     const regPart = r.state
       ? `已注册：${cfg.name || "?"}（stcp，本机绑定 ${r.state.opencodeRemotePort}/${r.state.agentRemotePort}）`
@@ -399,6 +409,7 @@
     const joinKeyTyped = $("inpJoinKey").value.trim();
     const ocPort = parseInt($("inpOcPort").value, 10) || 4096;
     const passTyped = $("inpOcPass").value.trim();
+    const pass2Typed = $("inpOcPass2").value.trim();
     const agentPort = parseInt($("inpAgentPort").value, 10) || 41999;
     const frpcBin = $("inpFrpc").value.trim() || "bin/frpc.exe";
 
@@ -406,6 +417,8 @@
     const old = r.cfg || {};
     if (!/^[a-z0-9_-]{2,32}$/.test(nameRaw)) { setOp("节点名不合法（2-32 位字母数字下划线中划线）", "bad"); return { ok: false }; }
     if (!hubAddr) { setOp("请填写 Hub 地址", "bad"); return { ok: false }; }
+    if (passTyped && !pass2Typed) { setOp("已输入新密码，请在「确认密码」中再次输入校验", "bad"); return { ok: false }; }
+    if (passTyped && pass2Typed !== passTyped) { setOp("两次输入的密码不一致，请重新输入", "bad"); return { ok: false }; }
     const joinKey = joinKeyTyped || old.joinKey || "";
     if (!joinKey) { setOp("首次加入需要填写加入密钥", "bad"); return { ok: false }; }
     const oldPass = old.opencode?.password || "";
@@ -435,6 +448,7 @@
   async function afterNodeSave(res) {
     $("inpJoinKey").value = "";
     $("inpOcPass").value = "";
+    $("inpOcPass2").value = "";
     const passHint = $("ocPassHint");
     if (passHint) passHint.textContent = "已设置";
     if (res.passwordChanged) {
@@ -539,19 +553,26 @@
     await afterNodeSave(res);
     await loadNodeForm();
   });
-  $("btnMasterGenKey").onclick = () => withBusy($("btnMasterGenKey"), "生成中…", async () => {
-    const r = await ipcRenderer.invoke("mesh:master:genkey");
-    if (r.ok) {
-      setOp(`已生成一次性加入密钥（已复制到剪贴板）：\n${r.key}\n发给新设备，在其「组网」页粘贴使用。`, "ok");
-    } else {
-      setOp(`生成失败：${r.error}`, "bad");
-    }
-  });
   $("btnNodeSync").onclick = () => withBusy($("btnNodeSync"), "同步中…", async () => {
     if (!(await saveMasterForm())) return;
     const r = await ipcRenderer.invoke("mesh:master:sync");
-    setOp(r.ok ? `已从注册中心同步 ${r.count} 个节点并自动配置` : `同步失败：${r.error}`, r.ok ? "ok" : "bad");
+    if (!r.ok) { setOp(`同步失败：${r.error}`, "bad"); return; }
+    let extra = "";
+    const gen = await ipcRenderer.invoke("mesh:master:visitors:generate");
+    if (gen.ok) {
+      const vis = await ipcRenderer.invoke("mesh:master:visitors:status");
+      if (vis.running) {
+        const rs = await ipcRenderer.invoke("mesh:master:visitors:start");
+        extra = rs.ok ? "；隧道已自动更新并重启" : `；隧道重启失败：${rs.error}`;
+      } else {
+        extra = "；隧道配置已更新";
+      }
+    } else {
+      extra = `；隧道配置更新失败：${gen.error}`;
+    }
+    setOp(`已同步 ${r.count} 个节点（新增 ${r.added?.length || 0}，清理 ${r.removed?.length || 0}）${extra}`, "ok");
     await refreshMasterList();
+    await refreshVisitorStatus();
   });
   $("btnNodeListRefresh").onclick = () => refreshMasterList();
   $("btnNodePrune").onclick = () => withBusy($("btnNodePrune"), "清理中…", async () => {
@@ -684,12 +705,20 @@
     const r = await ipcRenderer.invoke("mesh:master:fleet");
     if (r.ok) {
       $("fleetPre").textContent = r.snippet;
-      $("fleetPre").classList.remove("hidden");
+      $("fleetCard").classList.remove("hidden");
       setOp("已生成 fleet 配置片段（复制到主控 opencode.jsonc 的 mcp 字段）", "ok");
     } else {
       setOp(`生成失败：${r.error}`, "bad");
     }
   });
+  $("btnDiagClose").onclick = () => $("diagCard").classList.add("hidden");
+  $("btnLogClose").onclick = () => $("logCard").classList.add("hidden");
+  $("btnAgentLogClose").onclick = () => {
+    $("agentLogCard").classList.add("hidden");
+    $("btnAgentLogRefresh").classList.add("hidden");
+  };
+  $("btnVisLogClose").onclick = () => $("visitorLogCard").classList.add("hidden");
+  $("btnFleetClose").onclick = () => $("fleetCard").classList.add("hidden");
 
   /* ---------------- 启动 ---------------- */
   refresh();

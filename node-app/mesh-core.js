@@ -310,7 +310,8 @@ async function getNodeConfig(root) {
     agentPid = await findPidByPort(cfg.agent.port);
     agentRunning = !!agentPid;
   }
-  return { cfg, state, agentRunning, agentPid, agentDir: dir, rootFound };
+  const renamed = !!(state?.name && cfg?.name && state.name !== cfg.name);
+  return { cfg, state, agentRunning, agentPid, agentDir: dir, rootFound, renamed };
 }
 
 function saveNodeConfig(root, cfg) {
@@ -439,18 +440,24 @@ async function syncMasterNodes(root) {
   const nodes = await registryNodes(root, cfg.registry);
   if (!nodes) return { ok: false, error: "无法获取节点列表（检查 Hub 连通性与本机节点凭据）" };
   const map = cfg.nodes || {};
+  const prevNames = new Set(Object.keys(map));
+  const pending = new Set(nodes.map((n) => n.name));
   for (const n of nodes) {
     const prev = map[n.name] || {};
     map[n.name] = {
+      ...prev,
       agentUrl: prev.agentUrl || `http://127.0.0.1:${n.agentRemotePort}`,
       opencodeUrl: prev.opencodeUrl || `http://127.0.0.1:${n.opencodeRemotePort}`,
       agentToken: n.token || prev.agentToken || "",
     };
   }
+  const removed = Object.keys(map).filter((k) => !pending.has(k));
+  for (const k of removed) delete map[k];
   cfg.registry = { address: rq.address, port: rq.port, adminToken: cfg.registry?.adminToken || "" };
   cfg.nodes = map;
   saveMasterConfig(root, cfg);
-  return { ok: true, count: nodes.length };
+  const added = [...pending].filter((k) => !prevNames.has(k));
+  return { ok: true, count: nodes.length, added, removed };
 }
 
 /** 让本机 agent 重启 opencode（用于密码变更后立即生效；走本机回环，无需隧道） */
@@ -464,18 +471,6 @@ async function restartLocalOpencode(root) {
   }, 90000);
   if (r.status !== 200 || !r.json) return { ok: false, error: r.text || `HTTP ${r.status}` };
   return { ok: r.json.ok !== false, ...r.json };
-}
-
-/** 平权：用本机节点凭据（或兼容的管理密钥）生成一次性加入密钥 */
-async function generateJoinKey(root) {
-  const cfg = getMasterConfig(root) || {};
-  const rq = registryRequest(root, cfg.registry);
-  if (!rq.address) return { ok: false, error: "尚未配置 Hub（请先在「组网」页填写 Hub 连接）" };
-  const r = await httpJson("POST", `http://${rq.address}:${rq.port}/admin/keys`, { count: 1 }, rq.headers);
-  if (r.status !== 200 || !r.json?.ok) {
-    return { ok: false, error: r.json?.error || r.text || `HTTP ${r.status}` };
-  }
-  return { ok: true, key: r.json.keys[0] };
 }
 
 /** 清理本地配置中已被吊销（注册表不存在）的节点 */
@@ -770,7 +765,7 @@ async function fleetSnippet(root) {
   const snippet = `"fleet": {
   "type": "local",
   "command": [
-    "npx", "-y", "opencode-fleet",
+    "npx", "-y", "opencode-fleet@0.2.0",
     ${nodeArgs.join(",\n    ")},
     "--password", "${password}",
     "--timeout", "600"
@@ -784,7 +779,6 @@ module.exports = {
   resolveNodeRuntime,
   findRepoRoot,
   registryRequest,
-  generateJoinKey,
   restartLocalOpencode,
   buildMasterExport,
   applyMasterImport,

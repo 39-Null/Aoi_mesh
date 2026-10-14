@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const fs = require("fs");
 const path = require("path");
-const { loadConfig, getNode, agentCall, agentHealth, registryNodes, registryFrps } = require("./lib");
+const { loadConfig, getNode, agentCall, agentHealth, registryNodes, registryFrps, dispatchToNode } = require("./lib");
 
 const USAGE = `opencode-mesh node-ctl
 
@@ -13,6 +13,9 @@ const USAGE = `opencode-mesh node-ctl
   node-ctl restart <node>              远程重启节点 opencode
   node-ctl fleet-config                输出主控 opencode 的 fleet MCP 配置片段
   node-ctl visitors-config [--out p]   生成主控侧 frpc visitors 配置（stcp 接入）
+  node-ctl dispatch <node> "<任务>"    按 aoi-mesh 协议派发任务（信封+回执解析，复用会话）
+                                       选项：--new 强制新会话；--mode one-shot|session；
+                                       --timeout 秒（默认300）；--raw 附原始回复
 
 选项：
   -c, --config <path>   指定 nodes.json（默认 ./nodes.json 或 node-ctl/nodes.json）
@@ -25,6 +28,10 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === "-c" || a === "--config") args.config = argv[++i];
     else if (a === "--out") args.out = argv[++i];
+    else if (a === "--mode") args.mode = argv[++i];
+    else if (a === "--timeout") args.timeout = argv[++i];
+    else if (a === "--new") args.new = true;
+    else if (a === "--raw") args.raw = true;
     else if (a === "-h" || a === "--help") args.help = true;
     else args._.push(a);
   }
@@ -206,6 +213,29 @@ ${sections.join("\n\n")}
         return;
       }
       return await cmdLifecycle(config, command, args._[1]);
+    }
+    if (command === "dispatch") {
+      const nodeName = args._[1];
+      const body = args._.slice(2).join(" ").trim();
+      if (!nodeName || !body) {
+        console.error('用法: node-ctl dispatch <node> "<任务正文>" [--new] [--mode one-shot|session] [--timeout 秒] [--raw]');
+        process.exitCode = 1;
+        return;
+      }
+      const { path: cfgPath, config } = loadConfig(args.config);
+      const res = await dispatchToNode(cfgPath, config, nodeName, body, {
+        newSession: !!args.new,
+        mode: args.mode || "one-shot",
+        timeoutSec: args.timeout ? parseInt(args.timeout, 10) : 300,
+      });
+      console.log(`任务 ${res.task} → ${nodeName} ［${res.status}］`);
+      console.log(`摘要：${res.summary || "(空)"}`);
+      if (res.artifacts) console.log(`产物：${res.artifacts}`);
+      if (args.raw) {
+        console.log("---- 原始回复 ----");
+        console.log(res.raw);
+      }
+      return;
     }
     if (command === "fleet-config") return await cmdFleetConfig(config);
     if (command === "visitors-config") return await cmdVisitorsConfig(config, args.out);

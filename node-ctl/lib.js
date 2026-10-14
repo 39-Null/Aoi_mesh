@@ -118,4 +118,147 @@ async function agentHealth(nodeCfg) {
   }
 }
 
-module.exports = { loadConfig, getNode, agentCall, agentHealth, registryNodes, registryFrps };
+/* ==================== aoi-mesh 协议 v1（信封 / 回执 / 派发） ==================== */
+
+function saveConfigFile(filePath, cfg) {
+  fs.writeFileSync(filePath, JSON.stringify(cfg, null, 2));
+}
+
+function newTaskId(prefix = "t") {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 6)}`;
+}
+
+function wrapEnvelope({ from, task, mode = "one-shot", body }) {
+  return [
+    "[aoi-mesh v1]",
+    `from: ${from}`,
+    `task: ${task}`,
+    `mode: ${mode}`,
+    "reply: result-block",
+    "---",
+    body,
+  ].join("\n");
+}
+
+function parseResultBlock(text) {
+  const s = String(text || "");
+  let body = null;
+  const strict = /\[aoi-mesh-result v1\]([\s\S]*?)\[\/aoi-mesh-result\]/i.exec(s);
+  if (strict) {
+    body = strict[1];
+  } else {
+    // 宽松回退：容忍接收端漏写标签（未加载 instructions）但给出 status 行的情况
+    const loose = /(?:^|\n)\s*status\s*:\s*(done|partial|failed)\s*(?:\n([\s\S]*))?/i.exec(s);
+    if (loose) body = `status: ${loose[1]}\n${loose[2] || ""}`;
+  }
+  if (!body) return null;
+  const fields = {};
+  for (const line of body.split(/\r?\n/)) {
+    const mm = /^(\w+)\s*:\s*(.+)$/.exec(line.trim());
+    if (mm) fields[mm[1].toLowerCase()] = mm[2].trim();
+  }
+  if (fields.status && !fields.summary) {
+    const rest = body
+      .replace(/^[\s\S]*?status\s*:\s*\w+\s*/i, "")
+      .replace(/^-{2,}\s*$/gm, "")
+      .replace(/^result-block\s*$/gim, "")
+      .trim();
+    if (rest) fields.summary = rest.slice(0, 800);
+  }
+  return fields;
+}
+
+async function opencodeApi(nodeCfg, method, endpoint, body, timeoutMs = 30000) {
+  const base = (nodeCfg.opencodeUrl || "").replace(/\/+$/, "");
+  if (!base) return { status: 0, json: null, text: "缺少 opencodeUrl" };
+  const auth = "Basic " + Buffer.from(`opencode:${nodeCfg.opencodePassword || ""}`).toString("base64");
+  try {
+    const res = await fetch(base + endpoint, {
+      method,
+      headers: { "Content-Type": "application/json", Authorization: auth },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const text = await res.text();
+    let json = null;
+    try {
+      json = JSON.parse(text);
+    } catch {}
+    return { status: res.status, json, text };
+  } catch (e) {
+    return { status: 0, json: null, text: e.message };
+  }
+}
+
+/** 按 aoi-mesh 协议派发任务（复用节点会话；解析回执块） */
+async function dispatchToNode(configPath, config, nodeName, body, opts = {}) {
+  const node = config.nodes?.[nodeName];
+  if (!node?.opencodeUrl) throw new Error(`节点 "${nodeName}" 缺少 opencodeUrl（先在 App「主控」页同步节点）`);
+  const nodeCfg = { ...node, opencodePassword: config.fleetPassword || "" };
+  if (!nodeCfg.opencodePassword) throw new Error("缺少统一密码（config.fleetPassword）");
+
+  const from = opts.from || "master";
+  const task = opts.task || newTaskId("t");
+  const mode = opts.mode || "one-shot";
+
+  let sessionId = opts.newSession ? null : node.sessionId || null;
+  if (sessionId) {
+    const probe = await opencodeApi(nodeCfg, "GET", `/session/${sessionId}`, undefined, 8000);
+    if (probe.status !== 200) sessionId = null;
+  }
+  if (!sessionId) {
+    const created = await opencodeApi(nodeCfg, "POST", "/session", { title: `aoi-mesh ${from}` }, 15000);
+    if (created.status !== 200 || !created.json?.id) {
+      throw new Error(`创建会话失败: HTTP ${created.status} ${String(created.text).slice(0, 120)}`);
+    }
+    sessionId = created.json.id;
+  }
+
+  const envelope = wrapEnvelope({ from, task, mode, body });
+  const timeoutMs = (opts.timeoutSec || 300) * 1000;
+  const res = await opencodeApi(nodeCfg, "POST", `/session/${sessionId}/message`, {
+    parts: [{ type: "text", text: envelope }],
+  }, timeoutMs);
+  if (res.status !== 200 || !res.json) {
+    throw new Error(`派发失败: HTTP ${res.status} ${String(res.text).slice(0, 160)}`);
+  }
+
+  const texts = (res.json.parts || [])
+    .filter((p) => p.type === "text")
+    .map((p) => p.text)
+    .join("\n");
+  const parsed = parseResultBlock(texts);
+
+  if (configPath) {
+    config.nodes[nodeName] = { ...node, sessionId };
+    try {
+      saveConfigFile(configPath, config);
+    } catch {}
+  }
+
+  return {
+    ok: true,
+    task,
+    sessionId,
+    status: parsed?.status || (texts ? "no-result-block" : "empty"),
+    summary: parsed?.summary || texts.slice(0, 800),
+    artifacts: parsed?.artifacts || "",
+    raw: texts,
+  };
+}
+
+module.exports = {
+  loadConfig,
+  getNode,
+  agentCall,
+  agentHealth,
+  registryNodes,
+  registryFrps,
+  saveConfigFile,
+  newTaskId,
+  wrapEnvelope,
+  parseResultBlock,
+  opencodeApi,
+  dispatchToNode,
+};
+
