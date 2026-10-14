@@ -1,0 +1,10 @@
+{
+  "name": "opencode-mesh-node-agent",
+  "version": "0.1.0",
+  "description": "opencode-mesh node agent - join the mesh, manage local opencode lifecycle",
+  "private": true,
+  "main": "agent.js",
+  "scripts": {
+    "start": "node agent.js"
+  }
+}

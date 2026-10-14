@@ -1,0 +1,819 @@
+/**
+ * opencode-mesh App 核心模块（被 Electron main 与测试共用）
+ * 节点侧：node.json 读写、agent 启停、状态
+ * 主控侧：nodes.json、注册中心查询、节点操作、visitor 管理、fleet 配置生成
+ * 可移植性：CLI 自动探测、端点从 bot .env 解析、仓库根可覆盖（OPENCODE_MESH_ROOT）
+ */
+const fs = require("fs");
+const path = require("path");
+const net = require("net");
+const os = require("os");
+const { spawn, exec } = require("child_process");
+
+/* ============================ 基础工具 ============================ */
+
+function execCmd(command, timeoutMs = 30000) {
+  return new Promise((resolve) => {
+    exec(command, { windowsHide: true, timeout: timeoutMs }, (err, stdout, stderr) => {
+      resolve(String(stdout || "") + String(stderr || ""));
+    });
+  });
+}
+
+function tcpProbe(host, port, timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    const sock = new net.Socket();
+    let done = false;
+    const finish = (ok) => {
+      if (!done) {
+        done = true;
+        sock.destroy();
+        resolve(ok);
+      }
+    };
+    sock.setTimeout(timeoutMs);
+    sock.once("connect", () => finish(true));
+    sock.once("timeout", () => finish(false));
+    sock.once("error", () => finish(false));
+    sock.connect(port, host);
+  });
+}
+
+async function findPidByPort(port) {
+  if (process.platform === "win32") {
+    const out = await execCmd("netstat -ano -p tcp", 15000);
+    for (const line of out.split(/\r?\n/)) {
+      const cols = line.trim().split(/\s+/);
+      if (cols.length >= 5 && cols[1].endsWith(`:${port}`) && /LISTENING/i.test(cols[3])) {
+        const pid = parseInt(cols[4], 10);
+        if (Number.isInteger(pid)) return pid;
+      }
+    }
+    return null;
+  }
+  const out = await execCmd(`ss -ltnp 2>/dev/null | grep ":${port} "`, 10000);
+  const m = out.match(/pid=(\d+)/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+async function killTree(pid) {
+  if (!pid) return false;
+  if (process.platform === "win32") {
+    await execCmd(`taskkill /pid ${pid} /t /f`, 20000);
+  } else {
+    await execCmd(`kill -TERM ${pid}`, 10000);
+    await new Promise((r) => setTimeout(r, 1500));
+    await execCmd(`kill -KILL ${pid} 2>/dev/null`, 10000);
+  }
+  return true;
+}
+
+function readJson(p) {
+  try {
+    return JSON.parse(fs.readFileSync(p, "utf8").replace(/^\uFEFF/, ""));
+  } catch {
+    return null;
+  }
+}
+
+function writeJson(p, obj) {
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(obj, null, 2));
+}
+
+function tailFile(p, maxLines) {
+  try {
+    const all = fs.readFileSync(p, "utf8").split(/\r?\n/);
+    return all
+      .slice(Math.max(0, all.length - maxLines))
+      .map((l) => l.replace(/\x1b\[[0-9;]*m/g, "").trimEnd())
+      .filter((l) => l.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+async function httpJson(method, url, body, headers = {}, timeoutMs = 8000) {
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json", ...headers },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const text = await res.text();
+    let json = null;
+    try {
+      json = JSON.parse(text);
+    } catch {}
+    return { status: res.status, json, text };
+  } catch (e) {
+    return { status: 0, json: null, text: e.message };
+  }
+}
+
+/* ==================== 可移植性：CLI 探测 / 端点解析 ==================== */
+
+let cachedCli = null;
+
+/** 探测 opencode-telegram CLI：环境变量 → PATH → 常见安装位置 */
+function resolveBotCli() {
+  const envCli = process.env.OPENCODE_TELEGRAM_CLI;
+  if (envCli && fs.existsSync(envCli)) return envCli;
+  if (cachedCli && fs.existsSync(cachedCli)) return cachedCli;
+
+  const isWin = process.platform === "win32";
+  const names = isWin
+    ? ["opencode-telegram.cmd", "opencode-telegram.exe", "opencode-telegram"]
+    : ["opencode-telegram"];
+
+  for (const dir of String(process.env.PATH || "").split(path.delimiter)) {
+    if (!dir) continue;
+    for (const n of names) {
+      const p = path.join(dir, n);
+      if (fs.existsSync(p)) {
+        cachedCli = p;
+        return p;
+      }
+    }
+  }
+
+  const candidates = [];
+  if (isWin) {
+    if (process.env.APPDATA) candidates.push(path.join(process.env.APPDATA, "npm", "opencode-telegram.cmd"));
+    if (process.env.LOCALAPPDATA) {
+      const nvmRoot = path.join(process.env.LOCALAPPDATA, "Author Software", "nvm", "installs");
+      try {
+        const versions = fs.readdirSync(nvmRoot).sort().reverse();
+        for (const v of versions) candidates.push(path.join(nvmRoot, v, "opencode-telegram.cmd"));
+      } catch {}
+      candidates.push(
+        path.join(process.env.LOCALAPPDATA, "Programs", "opencode-telegram", "opencode-telegram.cmd")
+      );
+    }
+  } else {
+    const home = os.homedir();
+    candidates.push(
+      "/usr/local/bin/opencode-telegram",
+      "/usr/bin/opencode-telegram",
+      path.join(home, ".local", "bin", "opencode-telegram")
+    );
+    try {
+      const nvmDir = path.join(home, ".nvm", "versions", "node");
+      const versions = fs.readdirSync(nvmDir).sort().reverse();
+      for (const v of versions) candidates.push(path.join(nvmDir, v, "bin", "opencode-telegram"));
+    } catch {}
+  }
+  for (const c of candidates) {
+    if (fs.existsSync(c)) {
+      cachedCli = c;
+      return c;
+    }
+  }
+  return "";
+}
+
+function readEnvFileValue(envFile, key) {
+  try {
+    const text = fs.readFileSync(envFile, "utf8");
+    const m = text.match(new RegExp(`^${key}=(.*)$`, "m"));
+    return m ? m[1].trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+/** 解析 "http://host:port" / "socks5://host:port" / "host:port" */
+function parseEndpoint(raw, defHost, defPort) {
+  if (!raw) return { host: defHost, port: defPort, raw: "" };
+  try {
+    const u = new URL(raw.includes("://") ? raw : `http://${raw}`);
+    const port = u.port
+      ? parseInt(u.port, 10)
+      : u.protocol === "https:"
+        ? 443
+        : u.protocol === "socks5:" || u.protocol === "socks5h:" || u.protocol === "socks4:"
+          ? defPort
+          : 80;
+    return { host: u.hostname || defHost, port: port || defPort, raw };
+  } catch {
+    return { host: defHost, port: defPort, raw: "" };
+  }
+}
+
+/** 从 bot .env 的某个 URL 变量解析端点（找不到则用默认值） */
+function envEndpoint(envFile, key, defHost, defPort) {
+  const raw = readEnvFileValue(envFile, key);
+  return parseEndpoint(raw, defHost, defPort);
+}
+
+/** 解析运行 agent 的 Node 运行时：优先真实 node（PATH），否则回退 electron（RUN_AS_NODE） */
+function resolveNodeRuntime() {
+  if (process.env.OPENCODE_MESH_NODE && fs.existsSync(process.env.OPENCODE_MESH_NODE)) {
+    return { exe: process.env.OPENCODE_MESH_NODE, env: {} };
+  }
+  const isWin = process.platform === "win32";
+  const names = isWin ? ["node.exe"] : ["node"];
+  for (const dir of String(process.env.PATH || "").split(path.delimiter)) {
+    if (!dir) continue;
+    for (const n of names) {
+      const p = path.join(dir, n);
+      try {
+        if (fs.existsSync(p)) return { exe: p, env: {} };
+      } catch {}
+    }
+  }
+  return { exe: process.execPath, env: { ELECTRON_RUN_AS_NODE: "1" } };
+}
+
+/* ==================== 仓库根保护 ==================== */
+
+let cachedRepoRoot = null;
+
+/** 解析仓库根目录：环境变量 → 开发/仓库内布局 → 便携包布局 → 从可执行文件/工作目录向上搜索 */
+function findRepoRoot() {
+  if (cachedRepoRoot) return cachedRepoRoot;
+  const isRepo = (p) => {
+    try {
+      return !!p && fs.existsSync(path.join(p, "node-agent", "agent.js"));
+    } catch {
+      return false;
+    }
+  };
+  const candidates = [];
+  if (process.env.OPENCODE_MESH_ROOT) candidates.push(process.env.OPENCODE_MESH_ROOT);
+  candidates.push(path.join(__dirname, "..")); // 开发场景：node-app 的上一级即仓库根
+  if (process.resourcesPath) {
+    // 打包（便携包）布局：<kit>/app/resources → <kit>/opencode-mesh
+    candidates.push(path.join(process.resourcesPath, "..", "..", "opencode-mesh"));
+    candidates.push(path.join(process.resourcesPath, "..", ".."));
+  }
+  for (const base of [path.dirname(process.execPath || ""), process.cwd()]) {
+    if (!base) continue;
+    let p = path.resolve(base);
+    for (let i = 0; i < 6; i++) {
+      candidates.push(p);
+      candidates.push(path.join(p, "opencode-mesh"));
+      const parent = path.dirname(p);
+      if (parent === p) break;
+      p = parent;
+    }
+  }
+  for (const c of candidates) {
+    if (isRepo(c)) {
+      cachedRepoRoot = path.resolve(c);
+      return cachedRepoRoot;
+    }
+  }
+  return path.resolve(process.env.OPENCODE_MESH_ROOT || path.join(__dirname, ".."));
+}
+
+function ensureRepoRoot(root) {
+  if (!root || !fs.existsSync(path.join(root, "node-agent", "agent.js"))) {
+    throw new Error(
+      `未找到仓库内容（${path.join(root || "?", "node-agent")} 不完整）。` +
+        `便携包请通过 start-app.sh 启动，或设置环境变量 OPENCODE_MESH_ROOT 指向仓库根目录；` +
+        `开发场景请把 App 放在仓库 node-app/ 目录内运行`
+    );
+  }
+}
+
+/* ============================ 节点侧 ============================ */
+
+function agentDir(root) {
+  return path.join(root, "node-agent");
+}
+
+function validateNodeCfg(cfg) {
+  if (!cfg || typeof cfg !== "object") throw new Error("配置为空");
+  if (!/^[a-z0-9_-]{2,32}$/.test(cfg.name || "")) {
+    throw new Error("节点名不合法（2-32 位小写字母/数字/下划线/中划线）");
+  }
+  if (!cfg.hub || !cfg.hub.address) throw new Error("缺少 Hub 地址");
+  const hp = parseInt(cfg.hub.port, 10);
+  if (!Number.isInteger(hp) || hp < 1 || hp > 65535) throw new Error("Hub 端口不合法");
+  const op = cfg.opencode ? parseInt(cfg.opencode.port, 10) : NaN;
+  if (!Number.isInteger(op) || op < 1 || op > 65535) throw new Error("opencode 端口不合法");
+  const ap = cfg.agent ? parseInt(cfg.agent.port, 10) : NaN;
+  if (!Number.isInteger(ap) || ap < 1 || ap > 65535) throw new Error("agent 端口不合法");
+  return true;
+}
+
+async function getNodeConfig(root) {
+  const dir = agentDir(root);
+  const rootFound = fs.existsSync(path.join(dir, "agent.js"));
+  const cfg = readJson(path.join(dir, "node.json"));
+  const state = readJson(path.join(dir, "data", "state.json"));
+  let agentRunning = false;
+  let agentPid = null;
+  if (cfg?.agent?.port) {
+    agentPid = await findPidByPort(cfg.agent.port);
+    agentRunning = !!agentPid;
+  }
+  return { cfg, state, agentRunning, agentPid, agentDir: dir, rootFound };
+}
+
+function saveNodeConfig(root, cfg) {
+  ensureRepoRoot(root);
+  validateNodeCfg(cfg);
+  writeJson(path.join(agentDir(root), "node.json"), cfg);
+  // Hub 单点：同步写入控制端配置（如存在），保证两处一致
+  const master = getMasterConfig(root);
+  if (master && cfg.hub?.address) {
+    master.registry = { ...(master.registry || {}), address: cfg.hub.address, port: cfg.hub.port || 18080 };
+    saveMasterConfig(root, master);
+  }
+}
+
+async function startAgent(root) {
+  ensureRepoRoot(root);
+  const dir = agentDir(root);
+  if (!fs.existsSync(path.join(dir, "agent.js"))) {
+    return { ok: false, error: `未找到 ${path.join(dir, "agent.js")}` };
+  }
+  const existing = await getNodeConfig(root);
+  if (existing.agentRunning) {
+    return { ok: false, error: "agent 已在运行", running: true, pid: existing.agentPid };
+  }
+  const logPath = path.join(dir, "data", "agent.log");
+  fs.mkdirSync(path.dirname(logPath), { recursive: true });
+  const out = fs.openSync(logPath, "a");
+  const rt = resolveNodeRuntime();
+  const child = spawn(rt.exe, ["agent.js"], {
+    cwd: dir,
+    detached: true,
+    windowsHide: true,
+    env: { ...process.env, ...rt.env },
+    // stdout 丢弃（agent 自身 log() 已写文件，避免双写）；stderr 保留供启动失败排障
+    stdio: ["ignore", "ignore", out],
+  });
+  child.unref();
+  return { ok: true, pid: child.pid, runtime: rt.exe };
+}
+
+async function stopAgent(root) {
+  const cfg = readJson(path.join(agentDir(root), "node.json"));
+  const port = cfg?.agent?.port || 41999;
+  const pid = await findPidByPort(port);
+  if (!pid) return { ok: false, error: "未找到 agent 进程（按端口 " + port + " 探测）" };
+  await killTree(pid);
+  return { ok: true, pid };
+}
+
+/** 重置节点身份：删除已注册状态与隧道配置（换设备/换节点名时使用） */
+function resetNodeState(root) {
+  ensureRepoRoot(root);
+  const dir = path.join(agentDir(root), "data");
+  const removed = [];
+  for (const f of ["state.json", "frpc.toml"]) {
+    const p = path.join(dir, f);
+    if (fs.existsSync(p)) {
+      fs.unlinkSync(p);
+      removed.push(f);
+    }
+  }
+  return { ok: true, removed };
+}
+
+function agentLogTail(root, maxLines = 120) {
+  return tailFile(path.join(agentDir(root), "data", "agent.log"), maxLines);
+}
+
+/* ============================ 主控侧 ============================ */
+
+function nodesCfgPath(root) {
+  return path.join(root, "node-ctl", "nodes.json");
+}
+
+function getMasterConfig(root) {
+  return readJson(nodesCfgPath(root));
+}
+
+function saveMasterConfig(root, cfg) {
+  ensureRepoRoot(root);
+  if (!cfg || typeof cfg !== "object") throw new Error("配置为空");
+  writeJson(nodesCfgPath(root), cfg);
+  // Hub 单点：同步回写本机节点配置（如存在），保证两处一致
+  const nodeCfg = readJson(path.join(agentDir(root), "node.json"));
+  if (nodeCfg && cfg.registry?.address) {
+    nodeCfg.hub = { ...(nodeCfg.hub || {}), address: cfg.registry.address, port: cfg.registry.port || 18080 };
+    writeJson(path.join(agentDir(root), "node.json"), nodeCfg);
+  }
+}
+
+function localNodeInfo(root) {
+  const cfg = readJson(path.join(agentDir(root), "node.json"));
+  const state = readJson(path.join(agentDir(root), "data", "state.json"));
+  return { hub: cfg?.hub || null, token: state?.token || "" };
+}
+
+/** 构建 registry 请求：平权优先本机节点凭据（admin 兼容）；地址回退本机 node.json 的 Hub */
+function registryRequest(root, reg) {
+  const local = localNodeInfo(root);
+  const address = (reg && reg.address) || local.hub?.address || "";
+  const port = (reg && reg.port) || local.hub?.port || 18080;
+  const headers = {};
+  if (local.token) headers["X-Node-Token"] = local.token;
+  if (reg && reg.adminToken) headers["X-Admin-Token"] = reg.adminToken;
+  return { address, port, headers };
+}
+
+async function registryNodes(root, reg) {
+  const rq = registryRequest(root, reg);
+  if (!rq.address) return null;
+  const r = await httpJson("GET", `http://${rq.address}:${rq.port}/nodes`, undefined, rq.headers);
+  return r.status === 200 && r.json?.ok ? r.json.nodes : null;
+}
+
+async function registryFrps(root, reg) {
+  const rq = registryRequest(root, reg);
+  if (!rq.address) return null;
+  const r = await httpJson("GET", `http://${rq.address}:${rq.port}/admin/frps`, undefined, rq.headers);
+  return r.status === 200 && r.json?.ok ? r.json.frps : null;
+}
+
+async function syncMasterNodes(root) {
+  const cfg = getMasterConfig(root) || {};
+  const rq = registryRequest(root, cfg.registry);
+  if (!rq.address) return { ok: false, error: "尚未配置 Hub（请先在「组网」页填写 Hub 连接）" };
+  const nodes = await registryNodes(root, cfg.registry);
+  if (!nodes) return { ok: false, error: "无法获取节点列表（检查 Hub 连通性与本机节点凭据）" };
+  const map = cfg.nodes || {};
+  for (const n of nodes) {
+    const prev = map[n.name] || {};
+    map[n.name] = {
+      agentUrl: prev.agentUrl || `http://127.0.0.1:${n.agentRemotePort}`,
+      opencodeUrl: prev.opencodeUrl || `http://127.0.0.1:${n.opencodeRemotePort}`,
+      agentToken: n.token || prev.agentToken || "",
+    };
+  }
+  cfg.registry = { address: rq.address, port: rq.port, adminToken: cfg.registry?.adminToken || "" };
+  cfg.nodes = map;
+  saveMasterConfig(root, cfg);
+  return { ok: true, count: nodes.length };
+}
+
+/** 让本机 agent 重启 opencode（用于密码变更后立即生效；走本机回环，无需隧道） */
+async function restartLocalOpencode(root) {
+  const cfg = readJson(path.join(agentDir(root), "node.json"));
+  const state = readJson(path.join(agentDir(root), "data", "state.json"));
+  const agentPort = cfg?.agent?.port || 41999;
+  if (!state?.token) return { ok: false, error: "agent 尚未注册（请先启动节点）" };
+  const r = await httpJson("POST", `http://127.0.0.1:${agentPort}/opencode/restart`, undefined, {
+    "X-Agent-Token": state.token,
+  }, 90000);
+  if (r.status !== 200 || !r.json) return { ok: false, error: r.text || `HTTP ${r.status}` };
+  return { ok: r.json.ok !== false, ...r.json };
+}
+
+/** 平权：用本机节点凭据（或兼容的管理密钥）生成一次性加入密钥 */
+async function generateJoinKey(root) {
+  const cfg = getMasterConfig(root) || {};
+  const rq = registryRequest(root, cfg.registry);
+  if (!rq.address) return { ok: false, error: "尚未配置 Hub（请先在「组网」页填写 Hub 连接）" };
+  const r = await httpJson("POST", `http://${rq.address}:${rq.port}/admin/keys`, { count: 1 }, rq.headers);
+  if (r.status !== 200 || !r.json?.ok) {
+    return { ok: false, error: r.json?.error || r.text || `HTTP ${r.status}` };
+  }
+  return { ok: true, key: r.json.keys[0] };
+}
+
+/** 清理本地配置中已被吊销（注册表不存在）的节点 */
+async function pruneMasterNodes(root) {
+  const cfg = getMasterConfig(root) || {};
+  const reg = await registryNodes(root, cfg.registry);
+  if (!reg) return { ok: false, error: "无法获取注册表节点（检查 Hub 连接）" };
+  const alive = new Set(reg.map((n) => n.name));
+  const removed = [];
+  for (const k of Object.keys(cfg.nodes || {})) {
+    if (!alive.has(k)) {
+      delete cfg.nodes[k];
+      removed.push(k);
+    }
+  }
+  if (removed.length) saveMasterConfig(root, cfg);
+  return { ok: true, removed };
+}
+
+async function listNodesMerged(root) {
+  const cfg = getMasterConfig(root) || {};
+  const regNodes = await registryNodes(root, cfg.registry);
+  const local = cfg.nodes || {};
+  const names = new Set([...Object.keys(local), ...(regNodes || []).map((n) => n.name)]);
+  const out = [];
+  for (const name of names) {
+    const reg = (regNodes || []).find((n) => n.name === name) || null;
+    const loc = local[name] || null;
+    let reach = null;
+    if (loc?.agentUrl) {
+      const r = await httpJson("GET", loc.agentUrl.replace(/\/+$/, "") + "/health", undefined, {}, 4000);
+      reach = r.status === 200 && r.json?.ok ? { ok: true, version: r.json.version } : { ok: false };
+    }
+    out.push({
+      name,
+      online: reg ? reg.online : null,
+      opencodePort: reg?.opencodeRemotePort ?? null,
+      agentPort: reg?.agentRemotePort ?? null,
+      local: !!loc,
+      reachable: reach,
+    });
+  }
+  return { ok: true, nodes: out, registryOk: regNodes !== null };
+}
+
+/** 确保主控隧道在线：未运行则按需生成配置并启动（未配置主控时跳过） */
+async function ensureVisitor(root) {
+  const st = await visitorStatus(root);
+  if (st.running) return { ok: true, already: true, port: st.port };
+  const cfg = getMasterConfig(root) || {};
+  const rq = registryRequest(root, cfg.registry);
+  if (!rq.address) {
+    return { ok: false, skipped: true, error: "本机尚未配置 Hub（不启动隧道）" };
+  }
+  if (!st.configured) {
+    const gen = await generateVisitors(root);
+    if (!gen.ok) return { ok: false, error: gen.error };
+  }
+  const started = await startVisitor(root);
+  return started.ok ? { ok: true, started: true, port: started.port } : { ok: false, error: started.error };
+}
+
+/** 一键启动节点：启动 agent + 自动确保隧道在线（本机为主控时） */
+async function startNodeFull(root) {
+  const steps = [];
+  const existing = await getNodeConfig(root);
+  if (existing.agentRunning) {
+    return { ok: false, running: true, error: "agent 已在运行", steps };
+  }
+  const agent = await startAgent(root);
+  if (!agent.ok) return { ok: false, error: agent.error, steps };
+  steps.push(`节点 agent 已启动（PID ${agent.pid}）`);
+  const visitor = await ensureVisitor(root);
+  if (visitor.already) steps.push(`隧道已在运行（127.0.0.1:${visitor.port}）`);
+  else if (visitor.ok) steps.push(`隧道已启动（127.0.0.1:${visitor.port}）`);
+  else if (visitor.skipped) steps.push(`未启动隧道：${visitor.error}`);
+  else steps.push(`隧道启动失败：${visitor.error}`);
+  return { ok: true, steps, agent, visitor };
+}
+
+async function nodeAction(root, name, action) {
+  const cfg = getMasterConfig(root) || {};
+  const loc = (cfg.nodes || {})[name];
+  if (!loc?.agentUrl) return { ok: false, error: `节点 "${name}" 未在 nodes.json 配置` };
+  const endpoint = action === "status" ? "/opencode/status" : `/opencode/${action}`;
+  const method = action === "status" ? "GET" : "POST";
+  const timeout = action === "restart" ? 90000 : action === "start" ? 60000 : 30000;
+
+  const doCall = () =>
+    httpJson(method, loc.agentUrl.replace(/\/+$/, "") + endpoint, undefined, {
+      "X-Agent-Token": loc.agentToken || "",
+    }, timeout);
+
+  let r = await doCall();
+  if (r.status === 0) {
+    // 隧道未运行时自动拉起后重试一次（而不是直接报错）
+    const st = await visitorStatus(root);
+    if (!st.running) {
+      const ens = await ensureVisitor(root);
+      if (ens.ok) r = await doCall();
+    }
+  }
+  if (r.status === 401) return { ok: false, error: "agent token 不正确" };
+  if (r.status === 0) {
+    return {
+      ok: false,
+      error: `无法连接（${r.text}）——请确认该节点的 agent 已启动（节点本机的「组网」页），以及主控隧道可用`,
+    };
+  }
+  if (!r.json) return { ok: false, error: `非 JSON 响应（${r.status}）` };
+  return { ok: r.json.ok !== false, ...r.json };
+}
+
+async function generateVisitors(root) {
+  ensureRepoRoot(root);
+  const cfg = getMasterConfig(root) || {};
+  const rq = registryRequest(root, cfg.registry);
+  if (!rq.address) return { ok: false, error: "尚未配置 Hub（请先在「组网」页填写 Hub 连接）" };
+  const nodes = await registryNodes(root, cfg.registry);
+  if (!nodes) return { ok: false, error: "无法获取节点列表（检查 Hub 连通性与本机节点凭据）" };
+  const frps = await registryFrps(root, cfg.registry);
+  if (!frps) return { ok: false, error: "无法获取 frps 信息" };
+  const wanted = Object.keys(cfg.nodes || {});
+  const list = nodes.filter((n) => (wanted.length ? wanted.includes(n.name) : true));
+  if (!list.length) return { ok: false, error: "注册表中没有可用节点" };
+  const sections = [];
+  for (const n of list) {
+    if (!n.stcpSecret) {
+      return { ok: false, error: `节点 ${n.name} 缺少 stcp 密钥（需在该节点重新注册）` };
+    }
+    sections.push(`[[visitors]]
+name = "${n.name}_opencode-visitor"
+type = "stcp"
+serverName = "${n.name}_opencode"
+secretKey = "${n.stcpSecret}"
+bindAddr = "127.0.0.1"
+bindPort = ${n.opencodeRemotePort}
+transport.useEncryption = true
+
+[[visitors]]
+name = "${n.name}_agent-visitor"
+type = "stcp"
+serverName = "${n.name}_agent"
+secretKey = "${n.stcpSecret}"
+bindAddr = "127.0.0.1"
+bindPort = ${n.agentRemotePort}
+transport.useEncryption = true`);
+  }
+  const toml = `# 由 opencode-mesh App 生成
+serverAddr = "${frps.addr}"
+serverPort = ${frps.port}
+auth.method = "token"
+auth.token = "${frps.token}"
+
+${sections.join("\n\n")}
+`;
+  const target = path.join(root, "node-ctl", "visitors.toml");
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, toml);
+  return {
+    ok: true,
+    target,
+    mapping: list.map((n) => ({ name: n.name, opencode: n.opencodeRemotePort, agent: n.agentRemotePort })),
+  };
+}
+
+function firstBindPort(root) {
+  const conf = path.join(root, "node-ctl", "visitors.toml");
+  try {
+    const text = fs.readFileSync(conf, "utf8");
+    const m = text.match(/bindPort\s*=\s*(\d+)/);
+    return m ? parseInt(m[1], 10) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function visitorStatus(root) {
+  const conf = path.join(root, "node-ctl", "visitors.toml");
+  if (!fs.existsSync(conf)) return { configured: false, running: false };
+  const port = firstBindPort(root);
+  const pid = port ? await findPidByPort(port) : null;
+  return { configured: true, running: !!pid, pid, port };
+}
+
+async function stopVisitor(root) {
+  const port = firstBindPort(root);
+  if (!port) return { ok: false, error: "尚未生成 visitors.toml" };
+  const pid = await findPidByPort(port);
+  if (!pid) return { ok: false, error: "隧道未在运行" };
+  await killTree(pid);
+  return { ok: true, pid };
+}
+
+async function startVisitor(root) {
+  const conf = path.join(root, "node-ctl", "visitors.toml");
+  if (!fs.existsSync(conf)) return { ok: false, error: "请先生成隧道配置" };
+  await stopVisitor(root);
+  const isWin = process.platform === "win32";
+  let frpc = path.join(root, "node-agent", "bin", isWin ? "frpc.exe" : "frpc");
+  if (!fs.existsSync(frpc)) frpc = "frpc";
+  const logPath = path.join(root, "node-ctl", "visitor.log");
+  const out = fs.openSync(logPath, "a");
+  const child = spawn(frpc, ["-c", conf], { detached: true, windowsHide: true, stdio: ["ignore", out, out] });
+  child.unref();
+  const port = firstBindPort(root);
+  for (let i = 0; i < 10; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    if (port && (await tcpProbe("127.0.0.1", port))) return { ok: true, port };
+  }
+  return { ok: false, error: "隧道未能在 10 秒内监听（查看 visitor 日志）" };
+}
+
+function visitorLogTail(root, maxLines = 120) {
+  return tailFile(path.join(root, "node-ctl", "visitor.log"), maxLines);
+}
+
+/** 打包主控配置（多控制端一键迁移用；含管理密钥，属密码级敏感信息） */
+function buildMasterExport(root) {
+  const cfg = getMasterConfig(root);
+  if (!cfg?.registry?.address || !cfg.registry.adminToken) {
+    throw new Error("主控配置不完整（缺少 Hub 地址或管理密钥），无法导出");
+  }
+  return {
+    app: "opencode-mesh",
+    kind: "master-config",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    registry: cfg.registry,
+    fleetPassword: cfg.fleetPassword || "",
+    nodes: cfg.nodes || {},
+  };
+}
+
+/** 应用导入的主控配置：校验格式 → 合并保存（节点表以导入值为准） */
+function applyMasterImport(root, raw) {
+  let data = raw;
+  if (typeof raw === "string") {
+    try {
+      data = JSON.parse(raw.replace(/^\uFEFF/, "").trim());
+    } catch {
+      throw new Error("剪贴板内容不是有效 JSON");
+    }
+  }
+  if (!data || data.app !== "opencode-mesh" || data.kind !== "master-config") {
+    throw new Error("剪贴板内容不是 opencode-mesh 主控配置（缺少标识）");
+  }
+  if (!data.registry?.address || !data.registry?.adminToken) {
+    throw new Error("导入配置缺少 Hub 地址或管理密钥");
+  }
+  const cfg = getMasterConfig(root) || {};
+  const merged = {
+    registry: {
+      address: String(data.registry.address),
+      port: parseInt(data.registry.port, 10) || 18080,
+      adminToken: String(data.registry.adminToken),
+    },
+    fleetPassword: data.fleetPassword || cfg.fleetPassword || "",
+    nodes: { ...(cfg.nodes || {}), ...(data.nodes || {}) },
+  };
+  saveMasterConfig(root, merged);
+  return {
+    ok: true,
+    registry: merged.registry,
+    fleetPassword: !!merged.fleetPassword,
+    nodes: Object.keys(merged.nodes).length,
+  };
+}
+
+async function fleetSnippet(root) {
+  const cfg = getMasterConfig(root);
+  if (!cfg) return { ok: false, error: "请先配置主控" };
+  const regNodes = await registryNodes(root, cfg.registry);
+  const names = Object.keys(cfg.nodes || {});
+  if (!names.length) return { ok: false, error: "没有节点" };
+  const nodeArgs = names.map((name) => {
+    const loc = cfg.nodes[name];
+    if (loc.opencodeUrl) return `"--node", "${name}=${loc.opencodeUrl}"`;
+    const reg = (regNodes || []).find((n) => n.name === name);
+    if (reg) return `"--node", "${name}=http://127.0.0.1:${reg.opencodeRemotePort}"`;
+    return null;
+  });
+  if (nodeArgs.includes(null)) return { ok: false, error: "无法确定部分节点地址（配置 registry 或 opencodeUrl）" };
+  let password = cfg.fleetPassword || "";
+  if (!password) {
+    const nodeCfg = readJson(path.join(agentDir(root), "node.json"));
+    password = nodeCfg?.opencode?.password || "";
+  }
+  if (!password) {
+    return { ok: false, error: "未设置共享 opencode 密码：请在「主控」页填写，或在「组网」页配置本机节点密码" };
+  }
+  const snippet = `"fleet": {
+  "type": "local",
+  "command": [
+    "npx", "-y", "opencode-fleet",
+    ${nodeArgs.join(",\n    ")},
+    "--password", "${password}",
+    "--timeout", "600"
+  ]
+}`;
+  return { ok: true, snippet };
+}
+
+module.exports = {
+  resolveBotCli,
+  resolveNodeRuntime,
+  findRepoRoot,
+  registryRequest,
+  generateJoinKey,
+  restartLocalOpencode,
+  buildMasterExport,
+  applyMasterImport,
+  readEnvFileValue,
+  parseEndpoint,
+  envEndpoint,
+  ensureRepoRoot,
+  syncMasterNodes,
+  pruneMasterNodes,
+  resetNodeState,
+  startNodeFull,
+  ensureVisitor,
+  tcpProbe,
+  findPidByPort,
+  getNodeConfig,
+  saveNodeConfig,
+  startAgent,
+  stopAgent,
+  agentLogTail,
+  getMasterConfig,
+  saveMasterConfig,
+  registryNodes,
+  registryFrps,
+  listNodesMerged,
+  nodeAction,
+  generateVisitors,
+  visitorStatus,
+  startVisitor,
+  stopVisitor,
+  visitorLogTail,
+  fleetSnippet,
+};

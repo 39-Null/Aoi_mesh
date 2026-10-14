@@ -1,0 +1,13 @@
+# 行尾策略：防止跨平台混乱（现状实测全 LF，此处为护栏）
+*.sh   text eol=lf
+*.js   text eol=lf
+*.html text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.ps1  text eol=crlf
+*.vbs  text eol=crlf
+*.cmd  text eol=crlf
+*.bat  text eol=crlf

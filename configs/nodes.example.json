@@ -1,0 +1,15 @@
+{
+  "registry": {
+    "address": "your-hub-address",
+    "port": 18080,
+    "adminToken": "REPLACE_WITH_REGISTRY_ADMIN_TOKEN"
+  },
+  "fleetPassword": "REPLACE_WITH_SHARED_OPENCODE_PASSWORD",
+  "nodes": {
+    "node-a": {
+      "agentUrl": "http://your-hub-address:14101",
+      "agentToken": "REPLACE_WITH_NODE_AGENT_TOKEN",
+      "opencodeUrl": "http://your-hub-address:14100"
+    }
+  }
+}

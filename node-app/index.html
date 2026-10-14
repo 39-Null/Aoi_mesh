@@ -1,0 +1,699 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 12px 16px 28px; user-select: none;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 13px; background: #14161a; color: #e8eaed;
+  }
+  .dim { color: #9aa0a6; }
+  .ok { color: #34c759; }
+  .bad { color: #d64545; }
+  .warn { color: #f5a623; }
+  .card {
+    background: #1d2025; border: 1px solid #2a2e35; border-radius: 10px;
+    padding: 10px 14px; margin-bottom: 10px;
+  }
+  .cardTitle { font-size: 12px; color: #9aa0a6; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; }
+  .row .k { color: #b9bec7; }
+  .row .v { text-align: right; }
+  .btns { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  button {
+    border: none; border-radius: 8px; cursor: pointer;
+    color: #fff; background: #2f6fed; padding: 7px 14px; font-size: 13px;
+    transition: opacity .15s;
+  }
+  button:hover { opacity: .88; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.small { padding: 4px 10px; font-size: 12px; border-radius: 7px; }
+  button.mini { padding: 4px 10px; font-size: 12px; border-radius: 7px; }
+  button.ghost { background: transparent; border: 1px solid #3a3f47; color: #cfd3da; }
+  button.ghost:hover { background: #262a30; }
+  header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  #dot { width: 12px; height: 12px; border-radius: 50%; background: #8a8f98; flex: none; }
+  #title { font-size: 15px; font-weight: 600; }
+  #host { font-size: 11px; }
+  header .grow { flex: 1; }
+  .hidden { display: none !important; }
+  #diagList .item { padding: 6px 0; border-bottom: 1px solid #262a30; }
+  #diagList .item:last-child { border-bottom: none; }
+  #diagList .d-name { font-weight: 600; }
+  #diagList .d-hint { font-size: 11px; color: #f5a623; margin-top: 2px; }
+  pre.logbox {
+    max-height: 200px; overflow: auto; font: 11px/1.5 Consolas, monospace;
+    background: #101215; border-radius: 6px; padding: 8px; margin: 6px 0 0;
+    white-space: pre-wrap; word-break: break-all; user-select: text;
+  }
+  select, input[type="password"], input[type="number"], input[type="text"] {
+    background: #101215; color: #e8eaed; border: 1px solid #3a3f47;
+    border-radius: 7px; padding: 5px 8px; font-size: 12px; outline: none;
+  }
+  input.grow { flex: 1; min-width: 140px; }
+  input.short { width: 90px; }
+  #opline {
+    font-size: 12px; color: #9aa0a6; white-space: pre-wrap; min-height: 18px;
+    border-top: 1px solid #262a30; padding-top: 8px; margin-top: 12px;
+  }
+  /* tabs */
+  #tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+  #tabs .tab {
+    background: transparent; border: 1px solid #3a3f47; color: #cfd3da;
+    padding: 6px 18px; border-radius: 8px; font-size: 13px;
+  }
+  #tabs .tab.active { background: #2f6fed; border-color: #2f6fed; color: #fff; }
+  /* node list */
+  .nrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 0; border-bottom: 1px solid #262a30; flex-wrap: wrap; }
+  .nrow:last-child { border-bottom: none; }
+  .ninfo { font-size: 12px; }
+  .nbtns { display: flex; gap: 6px; }
+  .fl { display: flex; align-items: center; gap: 8px; padding: 4px 0; flex-wrap: wrap; }
+  .fl label { color: #b9bec7; flex: none; min-width: 84px; font-size: 12px; }
+</style>
+</head>
+<body>
+  <nav id="tabs">
+    <button class="tab active" data-tab="local">本机</button>
+    <button class="tab" data-tab="network">组网</button>
+    <button class="tab" data-tab="master">主控</button>
+  </nav>
+
+  <!-- ======================= 本机 ======================= -->
+  <section data-tab-content="local">
+    <header>
+      <span id="dot"></span>
+      <div>
+        <div id="title">本机节点</div>
+        <div id="host" class="dim">…</div>
+      </div>
+      <div class="grow"></div>
+      <button id="btnRestart" class="small" title="停止并重新启动远程连接">重启连接</button>
+    </header>
+
+    <section class="card">
+      <div class="row"><span class="k">远程连接</span><span class="v" id="vBot">…</span></div>
+      <div class="row"><span class="k">opencode 服务</span><span class="v" id="vOc">…</span></div>
+      <div class="row"><span class="k">代理 (mihomo)</span><span class="v" id="vProxy">…</span></div>
+      <div class="row"><span class="k">开机自启</span><span class="v" id="vAuto">…</span></div>
+    </section>
+
+    <div class="btns">
+      <button id="btnDiag">一键诊断</button>
+      <button id="btnLogs" class="ghost">查看日志</button>
+    </div>
+
+    <section class="card hidden" id="diagCard">
+      <div class="cardTitle">诊断结果</div>
+      <div id="diagList"></div>
+    </section>
+
+    <section class="card hidden" id="logCard">
+      <div class="cardTitle">
+        <span>日志尾部</span><span id="logFile" class="dim"></span>
+        <span style="flex:1"></span>
+        <button id="btnLogRefresh" class="mini ghost">刷新</button>
+        <button id="btnLogOpen" class="mini ghost">目录</button>
+      </div>
+      <pre class="logbox" id="logPre">…</pre>
+    </section>
+
+    <section class="card">
+      <div class="cardTitle">Token 轮换 <span class="dim">（BotFather /revoke 后粘贴新 token）</span></div>
+      <div class="btns" style="margin-bottom:0;">
+        <input id="inpToken" class="grow" type="password" placeholder="粘贴新 token" autocomplete="off" />
+        <button id="btnToken" class="mini">更新并重启</button>
+      </div>
+    </section>
+  </section>
+
+  <!-- ======================= 组网 ======================= -->
+  <section data-tab-content="network" class="hidden">
+    <section class="card">
+      <div class="cardTitle">Hub 连接 <span class="dim">（本机节点与控制端共用，保存会同步两处）</span></div>
+      <div class="fl"><label>Hub 地址</label><input id="inpHubAddr" class="grow" type="text" placeholder="例如 hub.example.com 或 1.2.3.4" /><input id="inpHubPort" class="short" type="number" placeholder="18080" /></div>
+      <div class="btns" style="margin-top:8px; margin-bottom:0;">
+        <button id="btnHubSave" class="mini">保存并同步</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="cardTitle">节点配置（本机加入网络）</div>
+      <div class="fl"><label>节点名</label><input id="inpNodeName" class="grow" type="text" placeholder="全网唯一，字母数字-_" /></div>
+      <div class="fl"><label>加入密钥</label><input id="inpJoinKey" class="grow" type="text" placeholder="一次性密钥（留空表示不修改）" /></div>
+      <div class="fl"><label>opencode</label><input id="inpOcPort" class="short" type="number" placeholder="端口 4096" /><input id="inpOcPass" class="grow" type="password" placeholder="要修改密码：在此输入新值；留空=不修改" /><span id="ocPassHint" class="dim"></span></div>
+      <div class="fl"><label>agent 端口</label><input id="inpAgentPort" class="short" type="number" placeholder="41999" /></div>
+      <div class="fl"><label>frpc 路径</label><input id="inpFrpc" class="grow" type="text" placeholder="bin/frpc.exe（相对 node-agent 目录）" /></div>
+      <div class="btns" style="margin-top:8px; margin-bottom:0;">
+        <button id="btnNodeSave" class="mini">保存配置</button>
+        <button id="btnNodeStart" class="mini" title="启动节点 agent；并自动确保隧道在线">启动节点</button>
+        <button id="btnNodeStop" class="mini ghost">停止节点</button>
+        <button id="btnNodeRefresh" class="mini ghost">刷新状态</button>
+        <button id="btnNodeReset" class="mini ghost" title="换设备或更换节点名时使用：删除本机注册状态，下次启动将用新配置重新注册">重置身份</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="cardTitle">控制端（可选） <span class="dim">（平权模式：注册后即可管理/邀请其他设备，通常无需密钥）</span></div>
+      <div class="fl"><label>共享密码</label><input id="inpFleetPass" class="grow" type="password" placeholder="各节点统一的 opencode 密码（编排派活用；留空取本机节点密码）" /></div>
+      <details>
+        <summary class="dim" style="cursor:pointer; font-size:12px; padding:4px 0;">高级：所有者密钥（可选，兼容旧配置或受限 Hub）</summary>
+        <div class="fl"><label>管理密钥</label><input id="inpRegToken" class="grow" type="password" placeholder="一般留空即可" /></div>
+      </details>
+      <div class="btns" style="margin-top:8px; margin-bottom:0;">
+        <button id="btnCtlSave" class="mini">保存</button>
+        <button id="btnMasterExport" class="mini ghost" title="把控制端配置打包到剪贴板，用于快速配置其他控制端">导出到剪贴板</button>
+        <button id="btnMasterImport" class="mini ghost" title="从剪贴板导入控制端配置并自动同步（多控制端一键就绪）">从剪贴板导入</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="cardTitle">节点状态</div>
+      <div id="nodeState" class="dim">…</div>
+    </section>
+
+    <div class="btns">
+      <button id="btnAgentLog" class="ghost">查看 agent 日志</button>
+      <button id="btnAgentLogRefresh" class="mini ghost hidden">刷新</button>
+    </div>
+
+    <section class="card hidden" id="agentLogCard">
+      <div class="cardTitle">agent 日志尾部</div>
+      <pre class="logbox" id="agentLogPre">…</pre>
+    </section>
+  </section>
+
+  <!-- ======================= 主控 ======================= -->
+  <section data-tab-content="master" class="hidden">
+    <section class="card">
+      <div class="cardTitle">节点管理</div>
+      <div class="btns" style="margin-bottom:8px;">
+        <button id="btnNodeSync" class="mini">同步节点（自动配置）</button>
+        <button id="btnNodeListRefresh" class="mini ghost">刷新列表</button>
+        <button id="btnNodePrune" class="mini ghost">清理失效节点</button>
+        <button id="btnMasterGenKey" class="mini">生成加入密钥</button>
+      </div>
+      <div id="nodeList" class="dim">（点击「同步节点」自动从注册中心拉取）</div>
+    </section>
+
+    <section class="card">
+      <div class="cardTitle">隧道（visitor）</div>
+      <div id="visitorState" class="dim">…</div>
+      <div class="btns" style="margin-top:8px; margin-bottom:0;">
+        <button id="btnVisGen" class="mini">生成/更新配置</button>
+        <button id="btnVisStart" class="mini">启动隧道</button>
+        <button id="btnVisStop" class="mini ghost">停止隧道</button>
+        <button id="btnVisLog" class="mini ghost">查看日志</button>
+      </div>
+    </section>
+
+    <section class="card hidden" id="visitorLogCard">
+      <div class="cardTitle">visitor 日志尾部</div>
+      <pre class="logbox" id="visitorLogPre">…</pre>
+    </section>
+
+    <section class="card">
+      <div class="cardTitle">编排（opencode-fleet）</div>
+      <div class="btns" style="margin-bottom:0;">
+        <button id="btnFleet" class="mini">生成 fleet 配置片段</button>
+      </div>
+      <pre class="logbox hidden" id="fleetPre"></pre>
+    </section>
+  </section>
+
+  <div id="opline">就绪</div>
+
+<script>
+  const { ipcRenderer } = require("electron");
+  const $ = (id) => document.getElementById(id);
+  let busy = false;
+
+  function setOp(text, kind) {
+    const el = $("opline");
+    el.textContent = text;
+    el.className = kind === "ok" ? "ok" : kind === "bad" ? "bad" : kind === "warn" ? "warn" : "";
+  }
+
+  async function withBusy(btn, label, fn) {
+    if (busy) return;
+    busy = true;
+    const old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = label;
+    try { await fn(); } finally {
+      busy = false;
+      btn.disabled = false;
+      btn.textContent = old;
+    }
+  }
+
+  /* ---------------- tabs ---------------- */
+  document.querySelectorAll("#tabs .tab").forEach((btn) => {
+    btn.onclick = () => switchTab(btn.dataset.tab);
+  });
+  function switchTab(name) {
+    document.querySelectorAll("#tabs .tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+    document.querySelectorAll("[data-tab-content]").forEach((s) => s.classList.toggle("hidden", s.dataset.tabContent !== name));
+    if (name === "network") loadNodeForm();
+    if (name === "master") loadMasterTab();
+  }
+
+  /* ---------------- 本机 ---------------- */
+  function render(s) {
+    $("host").textContent = s.hostname + " · " + new Date().toLocaleTimeString();
+    $("dot").style.background = s.bot.running ? "#34c759" : "#8a8f98";
+    const bot = $("vBot");
+    bot.textContent = s.bot.running
+      ? `已开启${s.bot.uptime ? " · " + s.bot.uptime : ""}${s.bot.pid ? " · PID " + s.bot.pid : ""}`
+      : s.bot.cliFound === false
+        ? "未找到 bot 命令（点「一键诊断」看提示）"
+        : "已停止";
+    bot.className = "v " + (s.bot.running ? "ok" : "bad");
+    const oc = $("vOc");
+    oc.textContent = s.opencode.healthy
+      ? `正常 v${s.opencode.version}${s.opencode.pid ? " · PID " + s.opencode.pid : ""}${s.opencode.mem ? " · " + s.opencode.mem : ""}`
+      : "未运行";
+    oc.className = "v " + (s.opencode.healthy ? "ok" : "bad");
+    const px = $("vProxy");
+    px.textContent = s.proxy.ok ? `可连接 (${s.proxy.host || "127.0.0.1"}:${s.proxy.port})` : "不通";
+    px.className = "v " + (s.proxy.ok ? "ok" : "bad");
+    const au = $("vAuto");
+    if (s.autostart === null) {
+      au.textContent = "仅 Windows 支持";
+      au.className = "v dim";
+    } else {
+      au.textContent = s.autostart ? "已配置" : "未配置";
+      au.className = "v " + (s.autostart ? "ok" : "warn");
+    }
+  }
+  async function refresh() {
+    if (busy) return;
+    try { render(await ipcRenderer.invoke("status")); } catch {}
+  }
+
+  $("btnRestart").onclick = () => withBusy($("btnRestart"), "重启中…", async () => {
+    setOp("正在重启连接…");
+    const r = await ipcRenderer.invoke("restart");
+    setOp((r.steps || []).join("\n"), r.ok ? "ok" : "bad");
+    await refresh();
+  });
+
+  $("btnDiag").onclick = () => withBusy($("btnDiag"), "诊断中…", async () => {
+    setOp("正在诊断…");
+    const list = await ipcRenderer.invoke("diagnostics");
+    const box = $("diagList");
+    box.textContent = "";
+    for (const item of list) {
+      const div = document.createElement("div");
+      div.className = "item";
+      const line = document.createElement("div");
+      const mark = document.createElement("span");
+      mark.textContent = item.ok ? "✓ " : "✗ ";
+      mark.className = item.ok ? "ok" : "bad";
+      const name = document.createElement("span");
+      name.className = "d-name";
+      name.textContent = item.name + "：";
+      const detail = document.createElement("span");
+      detail.textContent = item.detail || "";
+      line.append(mark, name, detail);
+      div.append(line);
+      if (item.hint) {
+        const h = document.createElement("div");
+        h.className = "d-hint";
+        h.textContent = "→ " + item.hint;
+        div.append(h);
+      }
+      box.append(div);
+    }
+    $("diagCard").classList.remove("hidden");
+    const bads = list.filter((x) => !x.ok).length;
+    setOp(bads ? `诊断完成：${bads} 项异常，见上方结果` : "诊断完成：全部正常", bads ? "warn" : "ok");
+  });
+
+  async function loadLogs() {
+    const r = await ipcRenderer.invoke("logs:tail");
+    $("logFile").textContent = r.ok ? r.file : "";
+    $("logPre").textContent = r.ok ? r.lines.join("\n") : (r.error || "无日志");
+    const pre = $("logPre");
+    pre.scrollTop = pre.scrollHeight;
+  }
+  $("btnLogs").onclick = async () => {
+    const card = $("logCard");
+    card.classList.toggle("hidden");
+    if (!card.classList.contains("hidden")) await loadLogs();
+  };
+  $("btnLogRefresh").onclick = () => loadLogs();
+  $("btnLogOpen").onclick = () => ipcRenderer.invoke("logs:openDir");
+
+  $("btnToken").onclick = () => withBusy($("btnToken"), "处理中…", async () => {
+    const token = $("inpToken").value.trim();
+    if (!token) { setOp("请先粘贴新 token", "warn"); return; }
+    if (!confirm("确认替换 token 并重启 bot？\n（替换前会自动备份 .env，且会先校验新 token 是否有效）")) return;
+    const r = await ipcRenderer.invoke("token:rotate", token);
+    setOp((r.steps || []).join("\n"), r.ok ? "ok" : "bad");
+    if (r.ok) $("inpToken").value = "";
+    await refresh();
+  });
+
+  /* ---------------- 组网（节点侧） ---------------- */
+  async function loadNodeForm() {
+    const r = await ipcRenderer.invoke("mesh:node:get");
+    const cfg = r.cfg || {};
+    $("inpNodeName").value = cfg.name || "";
+    $("inpHubAddr").value = cfg.hub?.address || "";
+    $("inpHubPort").value = cfg.hub?.port || 18080;
+    // 注意：不清空「加入密钥 / opencode 密码」输入框——避免异步刷新竞态吞掉用户刚输入的内容
+    $("inpOcPort").value = cfg.opencode?.port || 4096;
+    $("inpAgentPort").value = cfg.agent?.port || 41999;
+    const passHint = $("ocPassHint");
+    if (passHint) {
+      const len = (cfg.opencode?.password || "").length;
+      passHint.textContent = len ? `已设置（${len} 位）` : "未设置（保存时自动生成）";
+    }
+    $("inpFrpc").value = cfg.frpc?.binary || "bin/frpc.exe";
+    const m = (await ipcRenderer.invoke("mesh:master:get")) || {};
+    $("inpFleetPass").value = m.fleetPassword || "";
+    $("inpRegToken").value = m.registry?.adminToken || "";
+    const st = $("nodeState");
+    if (r.rootFound === false) {
+      st.textContent = `未找到仓库内容（${r.agentDir}）。便携包请通过 start-app.sh 启动；开发场景请将 App 放在仓库 node-app/ 目录内；或设置环境变量 OPENCODE_MESH_ROOT 指向仓库根目录`;
+      st.className = "bad";
+      return;
+    }
+    const agentPart = r.agentRunning ? `agent 运行中（PID ${r.agentPid}）` : "agent 未运行";
+    const regPart = r.state
+      ? `已注册：${cfg.name || "?"}（stcp，本机绑定 ${r.state.opencodeRemotePort}/${r.state.agentRemotePort}）`
+      : "未注册（保存配置后点「启动节点」）";
+    st.textContent = agentPart + " · " + regPart;
+    st.className = r.agentRunning ? "ok" : "dim";
+  }
+
+  async function saveNodeForm() {
+    // 同步读取表单（在任何 await 之前），避免异步刷新竞态吞掉刚输入的内容
+    const nameRaw = $("inpNodeName").value.trim().toLowerCase();
+    const hubAddr = $("inpHubAddr").value.trim();
+    const hubPort = parseInt($("inpHubPort").value, 10) || 18080;
+    const joinKeyTyped = $("inpJoinKey").value.trim();
+    const ocPort = parseInt($("inpOcPort").value, 10) || 4096;
+    const passTyped = $("inpOcPass").value.trim();
+    const agentPort = parseInt($("inpAgentPort").value, 10) || 41999;
+    const frpcBin = $("inpFrpc").value.trim() || "bin/frpc.exe";
+
+    const r = await ipcRenderer.invoke("mesh:node:get");
+    const old = r.cfg || {};
+    if (!/^[a-z0-9_-]{2,32}$/.test(nameRaw)) { setOp("节点名不合法（2-32 位字母数字下划线中划线）", "bad"); return { ok: false }; }
+    if (!hubAddr) { setOp("请填写 Hub 地址", "bad"); return { ok: false }; }
+    const joinKey = joinKeyTyped || old.joinKey || "";
+    if (!joinKey) { setOp("首次加入需要填写加入密钥", "bad"); return { ok: false }; }
+    const oldPass = old.opencode?.password || "";
+    let password = passTyped || oldPass;
+    if (!password) {
+      password = Array.from(crypto.getRandomValues(new Uint8Array(18)))
+        .map((b) => b.toString(16).padStart(2, "0")).join("");
+    }
+    const passwordChanged = !!passTyped && passTyped !== oldPass;
+    const cfg = {
+      name: nameRaw,
+      hub: { address: hubAddr, port: hubPort },
+      joinKey,
+      opencode: { port: ocPort, password, autoStart: true },
+      agent: { port: agentPort },
+      frpc: { binary: frpcBin },
+    };
+    const saveRes = await ipcRenderer.invoke("mesh:node:save", cfg);
+    if (!saveRes || !saveRes.ok) {
+      setOp("保存失败：" + (saveRes?.error || "未知错误"), "bad");
+      return { ok: false };
+    }
+    return { ok: true, passwordChanged, agentRunning: !!r.agentRunning };
+  }
+
+  /** 保存后的公共处理：清空已提交的敏感输入 + 密码变更即刻生效链 */
+  async function afterNodeSave(res) {
+    $("inpJoinKey").value = "";
+    $("inpOcPass").value = "";
+    const passHint = $("ocPassHint");
+    if (passHint) passHint.textContent = "已设置";
+    if (res.passwordChanged) {
+      if (res.agentRunning) {
+        const rr = await ipcRenderer.invoke("mesh:node:restartOpencode");
+        setOp(
+          rr.ok ? "密码已更新：本机 opencode 已用新密码重启 ✓" : "密码已保存，但 opencode 重启失败：" + rr.error,
+          rr.ok ? "ok" : "bad"
+        );
+      } else {
+        setOp("密码已保存；启动节点后将自动以新密码运行", "ok");
+      }
+    }
+  }
+
+  $("btnNodeSave").onclick = () => withBusy($("btnNodeSave"), "保存中…", async () => {
+    const res = await saveNodeForm();
+    if (!res.ok) return;
+    setOp("节点配置已保存", "ok");
+    await afterNodeSave(res);
+    await loadNodeForm();
+  });
+  $("btnNodeStart").onclick = () => withBusy($("btnNodeStart"), "启动中…", async () => {
+    const saveRes = await saveNodeForm();
+    if (!saveRes.ok) return;
+    // 密码变更时先让 opencode 以新密码重启（本机回环），随后 agent 启动检查会直接通过
+    await afterNodeSave(saveRes);
+    setOp("正在启动节点（含隧道）…");
+    let r = await ipcRenderer.invoke("mesh:node:startFull");
+    if (!r.ok && r.running) {
+      if (!confirm("agent 已在运行。是否重启以使新配置生效？")) { setOp("已取消（配置已保存，未重启）", "warn"); return; }
+      await ipcRenderer.invoke("mesh:node:stop");
+      r = await ipcRenderer.invoke("mesh:node:startFull");
+    }
+    if (r.ok) {
+      setOp((r.steps || []).concat("几秒后将自动注册上线").join("\n"), "ok");
+    } else {
+      setOp("启动失败：" + (r.error || "未知错误"), "bad");
+    }
+    await new Promise((res) => setTimeout(res, 5000));
+    await loadNodeForm();
+  });
+  $("btnNodeStop").onclick = () => withBusy($("btnNodeStop"), "停止中…", async () => {
+    const r = await ipcRenderer.invoke("mesh:node:stop");
+    setOp(r.ok ? `agent 已停止（PID ${r.pid}）` : `停止失败：${r.error}`, r.ok ? "ok" : "bad");
+    await loadNodeForm();
+  });
+  $("btnNodeRefresh").onclick = () => loadNodeForm();
+  $("btnNodeReset").onclick = () => withBusy($("btnNodeReset"), "重置中…", async () => {
+    if (!confirm("重置节点身份？\n会删除本机注册状态（state.json / frpc.toml）。\n适用：把仓库拷到新设备、或更换节点名后重新注册；重置后点「启动节点」需使用有效的加入密钥。")) return;
+    const r = await ipcRenderer.invoke("mesh:node:reset");
+    setOp(r.ok ? `已重置（删除：${(r.removed || []).join(", ") || "无文件"}）` : `重置失败：${r.error}`, r.ok ? "ok" : "bad");
+    await loadNodeForm();
+  });
+  async function loadAgentLog() {
+    const lines = await ipcRenderer.invoke("mesh:node:log");
+    $("agentLogPre").textContent = (lines || []).join("\n") || "（无日志）";
+    const pre = $("agentLogPre");
+    pre.scrollTop = pre.scrollHeight;
+  }
+  $("btnAgentLog").onclick = async () => {
+    const card = $("agentLogCard");
+    card.classList.toggle("hidden");
+    $("btnAgentLogRefresh").classList.toggle("hidden", card.classList.contains("hidden"));
+    if (!card.classList.contains("hidden")) await loadAgentLog();
+  };
+  $("btnAgentLogRefresh").onclick = () => loadAgentLog();
+
+  /* ---------------- 主控 ---------------- */
+  async function loadMasterTab() {
+    await refreshMasterList();
+    await refreshVisitorStatus();
+  }
+
+  async function saveMasterForm() {
+    const old = (await ipcRenderer.invoke("mesh:master:get")) || {};
+    const hubAddr = $("inpHubAddr").value.trim();
+    if (!hubAddr) { setOp("请先在「组网」页填写 Hub 连接", "bad"); return false; }
+    const cfg = {
+      registry: {
+        address: hubAddr,
+        port: parseInt($("inpHubPort").value, 10) || 18080,
+        adminToken: $("inpRegToken").value.trim() || old.registry?.adminToken || "",
+      },
+      fleetPassword: $("inpFleetPass").value.trim() || old.fleetPassword || "",
+      nodes: old.nodes || {},
+    };
+    const saveRes = await ipcRenderer.invoke("mesh:master:save", cfg);
+    if (!saveRes || !saveRes.ok) {
+      setOp("保存失败：" + (saveRes?.error || "未知错误"), "bad");
+      return false;
+    }
+    return true;
+  }
+  $("btnCtlSave").onclick = () => withBusy($("btnCtlSave"), "保存中…", async () => {
+    if (await saveMasterForm()) setOp("控制端配置已保存（Hub 已与节点配置同步）", "ok");
+  });
+  $("btnHubSave").onclick = () => withBusy($("btnHubSave"), "保存中…", async () => {
+    const res = await saveNodeForm();
+    if (!res.ok) return;
+    setOp("Hub 连接已保存（节点与控制端两处已同步）", "ok");
+    await afterNodeSave(res);
+    await loadNodeForm();
+  });
+  $("btnMasterGenKey").onclick = () => withBusy($("btnMasterGenKey"), "生成中…", async () => {
+    const r = await ipcRenderer.invoke("mesh:master:genkey");
+    if (r.ok) {
+      setOp(`已生成一次性加入密钥（已复制到剪贴板）：\n${r.key}\n发给新设备，在其「组网」页粘贴使用。`, "ok");
+    } else {
+      setOp(`生成失败：${r.error}`, "bad");
+    }
+  });
+  $("btnNodeSync").onclick = () => withBusy($("btnNodeSync"), "同步中…", async () => {
+    if (!(await saveMasterForm())) return;
+    const r = await ipcRenderer.invoke("mesh:master:sync");
+    setOp(r.ok ? `已从注册中心同步 ${r.count} 个节点并自动配置` : `同步失败：${r.error}`, r.ok ? "ok" : "bad");
+    await refreshMasterList();
+  });
+  $("btnNodeListRefresh").onclick = () => refreshMasterList();
+  $("btnNodePrune").onclick = () => withBusy($("btnNodePrune"), "清理中…", async () => {
+    if (!(await saveMasterForm())) return;
+    const r = await ipcRenderer.invoke("mesh:master:prune");
+    setOp(
+      r.ok ? (r.removed?.length ? `已清理失效节点：${r.removed.join(", ")}` : "没有需要清理的节点") : `清理失败：${r.error}`,
+      r.ok ? "ok" : "bad"
+    );
+    await refreshMasterList();
+  });
+  $("btnMasterExport").onclick = () => withBusy($("btnMasterExport"), "导出中…", async () => {
+    if (!(await saveMasterForm())) return;
+    if (!confirm("导出控制端配置到剪贴板？\n内容包含凭据（密码级敏感信息），请勿外发。")) return;
+    const r = await ipcRenderer.invoke("mesh:master:export");
+    setOp(
+      r.ok
+        ? `已导出到剪贴板：Hub ${r.registry}，${r.nodes} 个节点。\n在其他设备的「从剪贴板导入」一键即可成为控制端。`
+        : `导出失败：${r.error}`,
+      r.ok ? "ok" : "bad"
+    );
+  });
+  $("btnMasterImport").onclick = () => withBusy($("btnMasterImport"), "导入中…", async () => {
+    if (!confirm("从剪贴板导入控制端配置？\n将写入本机控制端设置并自动同步节点。")) return;
+    const beforeHub = $("inpHubAddr").value.trim();
+    const r = await ipcRenderer.invoke("mesh:master:import");
+    if (r.ok) {
+      const parts = [`Hub ${r.registry.address}`, `${r.nodes} 个节点`];
+      if (r.synced !== null && r.synced !== undefined) parts.push(`已同步 ${r.synced} 个`);
+      if (r.syncError) parts.push(`同步失败：${r.syncError}`);
+      setOp(`导入成功（${parts.join("，")}）`, "ok");
+      await loadNodeForm();
+      await refreshMasterList();
+      if (beforeHub && r.registry.address !== beforeHub) {
+        setOp(
+          `导入成功（${parts.join("，")}）\n注意：Hub 已变更为 ${r.registry.address}，并已同步到本机节点配置；如本机已注册，请到「组网」页「重置身份」后用新加入密钥重新注册。`,
+          "warn"
+        );
+      }
+    } else {
+      setOp(`导入失败：${r.error}`, "bad");
+    }
+  });
+
+  async function refreshMasterList() {
+    const r = await ipcRenderer.invoke("mesh:master:list");
+    const box = $("nodeList");
+    box.textContent = "";
+    box.className = "";
+    if (!r.ok || !r.nodes?.length) {
+      box.textContent = r.registryOk === false ? "无法连接注册中心（检查地址/密钥）" : "（无节点，点击「同步节点」）";
+      box.className = "dim";
+      return;
+    }
+    for (const n of r.nodes) {
+      const row = document.createElement("div");
+      row.className = "nrow";
+      const info = document.createElement("div");
+      info.className = "ninfo";
+      const regPart = n.online === null ? "注册表:-" : (n.online ? "注册表:在线" : "注册表:离线");
+      const tunPart = n.reachable ? (n.reachable.ok ? `隧道:可达 v${n.reachable.version || "?"}` : "隧道:不可达") : "隧道:未配置";
+      info.textContent = `${n.name} · ${regPart} · ${tunPart}`;
+      const btns = document.createElement("div");
+      btns.className = "nbtns";
+      for (const [label, act] of [["状态", "status"], ["启动", "start"], ["停止", "stop"], ["重启", "restart"]]) {
+        const b = document.createElement("button");
+        b.className = "mini ghost";
+        b.textContent = label;
+        b.onclick = async () => {
+          const res = await ipcRenderer.invoke("mesh:master:action", { name: n.name, action: act });
+          if (res.ok) {
+            const state = res.running === undefined ? "" : (res.running ? `（运行中 PID ${res.pid}）` : "（未运行）");
+            setOp(`${n.name} ${label}: 成功${state}`, "ok");
+          } else {
+            setOp(`${n.name} ${label}: 失败 — ${res.error}`, "bad");
+          }
+        };
+        btns.append(b);
+      }
+      row.append(info, btns);
+      box.append(row);
+    }
+  }
+
+  async function refreshVisitorStatus() {
+    const s = await ipcRenderer.invoke("mesh:master:visitors:status");
+    const el = $("visitorState");
+    if (!s.configured) {
+      el.textContent = "未生成配置（点击「生成/更新配置」）";
+      el.className = "dim";
+    } else if (s.running) {
+      el.textContent = `运行中（PID ${s.pid}，监听 127.0.0.1:${s.port}）`;
+      el.className = "ok";
+    } else {
+      el.textContent = "已配置，未运行";
+      el.className = "warn";
+    }
+  }
+  $("btnVisGen").onclick = () => withBusy($("btnVisGen"), "生成中…", async () => {
+    const r = await ipcRenderer.invoke("mesh:master:visitors:generate");
+    if (r.ok) {
+      setOp("隧道配置已生成：\n" + (r.mapping || []).map((m) => `  ${m.name}: opencode→127.0.0.1:${m.opencode}，agent→127.0.0.1:${m.agent}`).join("\n"), "ok");
+    } else {
+      setOp(`生成失败：${r.error}`, "bad");
+    }
+    await refreshVisitorStatus();
+  });
+  $("btnVisStart").onclick = () => withBusy($("btnVisStart"), "启动中…", async () => {
+    setOp("正在启动隧道…");
+    const r = await ipcRenderer.invoke("mesh:master:visitors:start");
+    setOp(r.ok ? `隧道已启动（监听 127.0.0.1:${r.port}）` : `启动失败：${r.error}`, r.ok ? "ok" : "bad");
+    await refreshVisitorStatus();
+  });
+  $("btnVisStop").onclick = () => withBusy($("btnVisStop"), "停止中…", async () => {
+    const r = await ipcRenderer.invoke("mesh:master:visitors:stop");
+    setOp(r.ok ? `隧道已停止（PID ${r.pid}）` : `停止失败：${r.error}`, r.ok ? "ok" : "bad");
+    await refreshVisitorStatus();
+  });
+  $("btnVisLog").onclick = async () => {
+    const card = $("visitorLogCard");
+    card.classList.toggle("hidden");
+    if (!card.classList.contains("hidden")) {
+      const lines = await ipcRenderer.invoke("mesh:master:visitors:log");
+      $("visitorLogPre").textContent = (lines || []).join("\n") || "（无日志）";
+      const pre = $("visitorLogPre");
+      pre.scrollTop = pre.scrollHeight;
+    }
+  };
+  $("btnFleet").onclick = () => withBusy($("btnFleet"), "生成中…", async () => {
+    const r = await ipcRenderer.invoke("mesh:master:fleet");
+    if (r.ok) {
+      $("fleetPre").textContent = r.snippet;
+      $("fleetPre").classList.remove("hidden");
+      setOp("已生成 fleet 配置片段（复制到主控 opencode.jsonc 的 mcp 字段）", "ok");
+    } else {
+      setOp(`生成失败：${r.error}`, "bad");
+    }
+  });
+
+  /* ---------------- 启动 ---------------- */
+  refresh();
+  setInterval(refresh, 8000);
+</script>
+</body>
+</html>

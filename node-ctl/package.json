@@ -1,0 +1,14 @@
+{
+  "name": "opencode-mesh-node-ctl",
+  "version": "0.1.0",
+  "description": "opencode-mesh node controller - CLI and MCP server for remote node opencode lifecycle",
+  "private": true,
+  "bin": {
+    "oc-node-ctl": "cli.js"
+  },
+  "main": "lib.js",
+  "scripts": {
+    "start": "node mcp-server.js",
+    "cli": "node cli.js"
+  }
+}

@@ -1,0 +1,47 @@
+node_modules/
+dist/
+dist-*/
+out/
+
+# 本地配置与密钥
+.env
+.env.*
+!.env.example
+*.local.md
+*.secret.*
+*.pem
+*.key
+
+# 运行时状态
+sleep-original.json
+*.log
+logs/
+
+# node-agent 运行时
+node-agent/bin/
+node-agent/data/
+node-agent/node.json
+
+# hub 运行时数据
+hub/registry/data.json
+hub/registry/data.json.tmp
+
+# node-ctl 本地配置（含凭据）
+node-ctl/nodes.json
+node-ctl/visitors.toml
+node-ctl/frpc.log
+node-ctl/visitor.log.err
+*.log.err
+configs/nodes.local.json
+visitors.toml
+frpc.toml
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 打包/临时残留
+*.packhold
+*.packignore
+*.bak

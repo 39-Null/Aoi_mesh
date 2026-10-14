@@ -1,0 +1,12 @@
+bindAddr = "0.0.0.0"
+bindPort = 17000
+
+auth.method = "token"
+auth.token = "CHANGE_ME"
+
+# 生产建议（有域名/证书后启用 TLS，主控与节点间隧道内容加密）：
+# transport.tls.force = true
+
+# 可选：日志
+# log.to = "/var/log/opencode-mesh/frps.log"
+# log.level = "info"

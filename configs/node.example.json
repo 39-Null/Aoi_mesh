@@ -1,0 +1,8 @@
+{
+  "name": "my-node",
+  "hub": { "address": "your-hub-address", "port": 18080 },
+  "joinKey": "REPLACE_WITH_JOIN_KEY",
+  "opencode": { "port": 4096, "password": "", "autoStart": true },
+  "agent": { "port": 41999 },
+  "frpc": { "binary": "bin/frpc.exe" }
+}
