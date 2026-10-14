@@ -25,14 +25,16 @@
 
 - [x] GitHub Private 仓库 `Aoi_mesh` 建立并完成首次推送（多设备同步用）
 - [x] 启动别名 `Aoi_mesh`：Windows 已安装到 PATH（%APPDATA%\npm）；Linux 脚本见 `scripts/aliases/Aoi_mesh.sh`
-- [ ] 下次 Linux kit 重打包时：同步密码热重载修复版 App + README 别名说明
+- [x] 密码保存竞态修复 + agent 配置热重载 + 「本机 opencode 即刻重启」IPC（密码变更 1 秒热生效）
+- [x] Linux kit 已随全部修复重新打包（隔离/无污染，asar 6 项干净）
 
-## P4 · 待办（用户侧 / 下一步）
+## P4 · 跨设备验收 —— ✅ 全部通过（2026-10-14）
 
-- [x] deepin-1 已加入网络（注册表:在线、隧道:可达）
-- [x] 远程生命周期验收通过：从本机远程停止 deepin-1 的 opencode（20644→停）并重新启动（新 PID 21087）；dev-node-1 对照正常
-- [ ] **统一 opencode 密码**：两台 App「组网」页密码栏填入同一新值 → 保存配置 → 停止/启动节点（当前 dev-node-1=旧测试值、deepin-1=自动随机值，派发鉴权 401）
-- [ ] 任务派发验收：`p4-dispatch.js`（自动读取本机统一密码）→ 向 deepin-1 发任务并回收结果
-- [ ] 共享密码同步：将「控制端」卡 fleetPassword 设为统一密码 + 重新生成 fleet 片段
+- [x] deepin-1 加入网络（注册表:在线、隧道:可达）
+- [x] 远程生命周期：本机远程停止/启动 deepin-1 的 opencode ✓
+- [x] 统一密码 `20060210bai` 对齐（修复保存竞态 + agent 配置热重载后两端生效）
+- [x] 任务派发与回收：向 deepin-1 派发 `uname -a`，3.5s 回收真实输出（bzw-PC / Deepin 内核信息）✓
+- [x] fleet 编排集成：主控 4096 注入 fleet + NodeCtl MCP；`fleet_list_nodes` 双节点在线（173/227ms）、`fleet_node_health` 正常 ✓
+- [ ] （建议）手机 Telegram 实测："让 deepin-1 执行 xxx 并汇报"
 - [ ] BotFather `/revoke` 后，用 App「Token 轮换」换新 token
 
