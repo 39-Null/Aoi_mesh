@@ -59,6 +59,26 @@ ln -s "$PWD/scripts/aliases/Aoi_mesh.sh" ~/.local/bin/Aoi_mesh
 2. 设备 B：`git pull`（拉取后按需在 `node-app` 重新 `npm install`）
 3. **注意**：`node_modules/`、`dist-*/`、运行时状态与全部密钥（`node.json`/`state.json`/`nodes.json` 等）均已被 `.gitignore` 排除——代码同步不等于配置同步，组网配置请在各自设备上通过 App 的「导出/导入」迁移
 
+**Windows 认证**（密钥 id_ed25519，账户 39-Null；重启后跑一次）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\aliases\github-auth.ps1
+```
+
+**Linux 设备首次克隆**（Private 仓库需先加密钥；如 22 端口受限走 443）：
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -C "aoi-linux"
+cat ~/.ssh/id_ed25519.pub    # 添加到 https://github.com/settings/keys
+mkdir -p ~/.ssh && cat >> ~/.ssh/config <<'EOF'
+Host github.com
+  HostName ssh.github.com
+  Port 443
+  User git
+EOF
+git clone git@github.com:39-Null/Aoi_mesh.git
+```
+
 ## 路线图
 
 | 阶段 | 内容 | 状态 |
