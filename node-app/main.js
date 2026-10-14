@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, clipboard } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, clipboard, Tray, Menu, nativeImage } = require("electron");
 const { exec, execFile } = require("child_process");
 const fs = require("fs");
 const os = require("os");
@@ -373,8 +373,20 @@ ipcMain.handle("mesh:master:import", async () => {
   }
 });
 
+let mainWindow = null;
+let tray = null;
+let trayHintShown = false;
+app.isQuitting = false;
+
+function showMainWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+    mainWindow.focus();
+  }
+}
+
 function createWindow() {
-  const win = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 620,
     height: 720,
     minWidth: 560,
@@ -385,8 +397,66 @@ function createWindow() {
     ...(fs.existsSync(ICON) ? { icon: ICON } : {}),
     webPreferences: { nodeIntegration: true, contextIsolation: false },
   });
-  win.loadFile("index.html");
+  mainWindow.loadFile("index.html");
+  // 关闭窗口 = 最小化到系统托盘（节点 agent / 隧道为独立进程，继续运行）
+  mainWindow.on("close", (e) => {
+    if (!app.isQuitting) {
+      e.preventDefault();
+      mainWindow.hide();
+      try {
+        if (!trayHintShown && tray && process.platform === "win32") {
+          tray.displayBalloon({
+            title: "Aoi_mesh",
+            content: "已最小化到系统托盘：节点与隧道保持运行。双击托盘图标恢复窗口；托盘右键菜单可退出。",
+          });
+          trayHintShown = true;
+        }
+      } catch {}
+    }
+  });
 }
 
-app.whenReady().then(createWindow);
-app.on("window-all-closed", () => app.quit());
+function createTray() {
+  try {
+    let img = nativeImage.createFromPath(ICON);
+    if (img.isEmpty()) img = nativeImage.createEmpty();
+    tray = new Tray(img);
+    tray.setToolTip("Aoi_mesh · opencode-mesh（常驻中）");
+    const menu = Menu.buildFromTemplate([
+      { label: "显示主界面", click: () => showMainWindow() },
+      { type: "separator" },
+      {
+        label: "退出应用",
+        click: () => {
+          app.isQuitting = true;
+          app.quit();
+        },
+      },
+    ]);
+    tray.setContextMenu(menu);
+    tray.on("double-click", () => showMainWindow());
+    tray.on("click", () => showMainWindow());
+  } catch (e) {
+    tray = null;
+  }
+}
+
+ipcMain.handle("app:quit", () => {
+  app.isQuitting = true;
+  app.quit();
+});
+
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  // 已有实例（含最小化到托盘）在运行：唤起它并退出本次启动
+  app.quit();
+} else {
+  app.on("second-instance", () => showMainWindow());
+  app.whenReady().then(() => {
+    createWindow();
+    createTray();
+  });
+  app.on("window-all-closed", () => {
+    if (app.isQuitting) app.quit();
+  });
+}

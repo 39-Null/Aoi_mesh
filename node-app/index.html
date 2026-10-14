@@ -84,6 +84,11 @@
   .nodeBtns { margin: 0; }
   .idchip { font-size: 12px; color: #7d8695; font-family: Consolas, monospace; user-select: text; padding-top: 3px; }
   .idchip.set { color: #c6ccd6; }
+  /* 首次配置向导 */
+  #setupOverlay { position: fixed; inset: 0; background: rgba(8, 10, 14, 0.72); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 18px; }
+  .setupCard { background: #171a21; border: 1px solid #2a2f3a; border-radius: 12px; padding: 18px 18px 14px; width: 100%; max-width: 520px; max-height: 92vh; overflow: auto; }
+  .setupTitle { font-size: 16px; font-weight: 600; }
+  .setupSub { font-size: 12px; color: #8a94a6; margin: 6px 0 12px; }
   .fl { display: flex; align-items: center; gap: 8px; padding: 4px 0; flex-wrap: wrap; }
   .fl label { color: #b9bec7; flex: none; min-width: 84px; font-size: 12px; }
 </style>
@@ -105,6 +110,7 @@
       </div>
       <div class="grow"></div>
       <button id="btnRestart" class="small" title="停止并重新启动远程连接">重启连接</button>
+      <button id="btnQuit" class="small ghost" title="退出应用（关闭窗口 = 最小化到系统托盘）">退出</button>
     </header>
 
     <section class="card">
@@ -241,6 +247,24 @@
     </section>
   </section>
 
+  <div id="setupOverlay" class="hidden">
+    <div class="setupCard">
+      <div class="setupTitle">首次使用 · 快速配置</div>
+      <div class="setupSub">将本机接入 opencode-mesh 网络：填写后点「保存并启动节点」。仅把本机当控制端使用可直接跳过。</div>
+      <div class="fl"><label>节点名</label><input id="setupName" class="grow" type="text" placeholder="例如 dev-node-2" /></div>
+      <div class="fl"><label>Hub 地址</label><input id="setupHubAddr" class="grow" type="text" placeholder="例如 1.2.3.4" /><input id="setupHubPort" class="short" type="number" placeholder="18080" /></div>
+      <div class="fl"><label>加入密钥</label><input id="setupJoinKey" class="grow" type="text" placeholder="一次性加入密钥" /></div>
+      <div class="fl"><label>opencode</label><input id="setupOcPort" class="short" type="number" placeholder="4096" /><input id="setupOcPass" class="grow" type="password" placeholder="访问密码（留空自动生成）" /></div>
+      <div class="fl"><label>确认密码</label><input id="setupOcPass2" class="grow" type="password" placeholder="再次输入密码" /></div>
+      <div class="fl"><label>agent 端口</label><input id="setupAgentPort" class="short" type="number" placeholder="41999" /></div>
+      <div class="btns" style="margin-top:10px;">
+        <button id="btnSetupStart" class="mini">保存并启动节点</button>
+        <button id="btnSetupSkip" class="mini ghost">仅作为控制端使用</button>
+      </div>
+      <div id="setupOp" class="dim" style="font-size:12px; margin-top:8px; min-height:16px;"></div>
+    </div>
+  </div>
+
   <div id="opline">就绪</div>
 
 <script>
@@ -375,10 +399,20 @@
     await refresh();
   });
 
+  function maybeShowSetup(r) {
+    if (!r || r.rootFound === false) return;
+    const configured = !!r.cfg?.hub?.address;
+    const done = localStorage.getItem("mesh_setup") === "done";
+    const el = $("setupOverlay");
+    if (!configured && !done) el.classList.remove("hidden");
+    else el.classList.add("hidden");
+  }
+
   /* ---------------- 组网（节点侧） ---------------- */
   async function loadNodeForm() {
     const r = await ipcRenderer.invoke("mesh:node:get");
     const cfg = r.cfg || {};
+    maybeShowSetup(r);
     $("inpNodeName").value = cfg.name || "";
     $("inpHubAddr").value = cfg.hub?.address || "";
     $("inpHubPort").value = cfg.hub?.port || 18080;
@@ -754,9 +788,68 @@
   $("btnVisLogClose").onclick = () => $("visitorLogCard").classList.add("hidden");
   $("btnFleetClose").onclick = () => $("fleetCard").classList.add("hidden");
 
+  /* ---------------- 首次配置向导 / 退出 ---------------- */
+  $("btnSetupStart").onclick = () => withBusy($("btnSetupStart"), "配置中…", async () => {
+    const op = $("setupOp");
+    const fail = (m) => { op.textContent = m; op.className = "bad"; };
+    const name = $("setupName").value.trim().toLowerCase();
+    const addr = $("setupHubAddr").value.trim();
+    const port = parseInt($("setupHubPort").value, 10) || 18080;
+    const key = $("setupJoinKey").value.trim();
+    const ocPort = parseInt($("setupOcPort").value, 10) || 4096;
+    const pass = $("setupOcPass").value.trim();
+    const pass2 = $("setupOcPass2").value.trim();
+    const agentPort = parseInt($("setupAgentPort").value, 10) || 41999;
+    if (!/^[a-z0-9_-]{2,32}$/.test(name)) return fail("节点名不合法（2-32 位字母数字下划线中划线）");
+    if (!addr) return fail("请填写 Hub 地址");
+    if (!key) return fail("请填写加入密钥");
+    if (pass && !pass2) return fail("请再次输入密码");
+    if (pass && pass2 !== pass) return fail("两次输入的密码不一致");
+    let password = pass;
+    if (!password) {
+      password = Array.from(crypto.getRandomValues(new Uint8Array(18)))
+        .map((b) => b.toString(16).padStart(2, "0")).join("");
+    }
+    const cfg = {
+      name,
+      hub: { address: addr, port },
+      joinKey: key,
+      opencode: { port: ocPort, password, autoStart: true },
+      agent: { port: agentPort },
+      frpc: { binary: process.platform === "win32" ? "bin/frpc.exe" : "bin/frpc" },
+    };
+    const saveRes = await ipcRenderer.invoke("mesh:node:save", cfg);
+    if (!saveRes?.ok) return fail("保存失败：" + (saveRes?.error || "未知错误"));
+    op.textContent = "已保存，正在启动节点…";
+    op.className = "dim";
+    const startRes = await ipcRenderer.invoke("mesh:node:start");
+    if (!startRes?.ok) return fail("启动失败：" + (startRes?.error || "未知错误") + "（可到「组网」页查看 agent 日志）");
+    localStorage.setItem("mesh_setup", "done");
+    setOp("首次配置完成：节点已注册启动", "ok");
+    op.textContent = "完成：" + (startRes.steps || []).join("；");
+    op.className = "ok";
+    $("setupOcPass").value = "";
+    $("setupOcPass2").value = "";
+    setTimeout(() => $("setupOverlay").classList.add("hidden"), 1500);
+    await loadNodeForm();
+    await refreshMasterList();
+  });
+  $("btnSetupSkip").onclick = () => {
+    localStorage.setItem("mesh_setup", "done");
+    $("setupOverlay").classList.add("hidden");
+  };
+  $("btnQuit").onclick = async () => {
+    if (!confirm("退出应用？\n节点 agent 与隧道为独立进程，将继续在后台运行。")) return;
+    await ipcRenderer.invoke("app:quit");
+  };
+
   /* ---------------- 启动 ---------------- */
   refresh();
   setInterval(refresh, 8000);
+  (async () => {
+    const r = await ipcRenderer.invoke("mesh:node:get");
+    maybeShowSetup(r);
+  })();
   (async () => {
     const r = await ipcRenderer.invoke("mesh:master:visitors:ensure");
     if (r.started) setOp(`隧道已自动启动（127.0.0.1:${r.port}）`, "ok");
