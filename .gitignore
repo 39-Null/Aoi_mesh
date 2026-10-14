@@ -29,6 +29,7 @@ hub/registry/data.json.tmp
 # node-ctl 本地配置（含凭据）
 node-ctl/nodes.json
 node-ctl/visitors.toml
+node-ctl/visitor.pid
 node-ctl/frpc.log
 node-ctl/visitor.log.err
 *.log.err

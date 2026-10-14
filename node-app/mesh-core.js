@@ -61,11 +61,128 @@ async function killTree(pid) {
   if (process.platform === "win32") {
     await execCmd(`taskkill /pid ${pid} /t /f`, 20000);
   } else {
-    await execCmd(`kill -TERM ${pid}`, 10000);
+    // detached 派生的进程是独立进程组（组长=pid），负号向整组发信号，避免孤儿
+    try {
+      process.kill(-pid, "SIGTERM");
+    } catch {
+      try { process.kill(pid, "SIGTERM"); } catch {}
+    }
     await new Promise((r) => setTimeout(r, 1500));
-    await execCmd(`kill -KILL ${pid} 2>/dev/null`, 10000);
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      try { process.kill(pid, "SIGKILL"); } catch {}
+    }
   }
   return true;
+}
+
+/* ==================== PID 记账（本地进程生命周期直连管理） ====================
+ * 原则：App 对自己派生的进程只认 spawn 时记下的 PID（pidfile）+ 存活检测 + 身份校验；
+ * 端口只作为服务配置值，不参与发现/停止决策。 */
+
+function pidFilePath(root, which) {
+  return which === "agent"
+    ? path.join(agentDir(root), "data", "agent.pid")
+    : path.join(root, "node-ctl", "visitor.pid");
+}
+
+function writePidFile(root, which, pid, marker) {
+  try {
+    const p = pidFilePath(root, which);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ pid, startedAt: Date.now(), marker: marker || null }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readPidFile(root, which) {
+  const rec = readJson(pidFilePath(root, which));
+  if (rec && Number.isInteger(rec.pid) && rec.pid > 0) return rec;
+  return null;
+}
+
+function removePidFile(root, which) {
+  try {
+    fs.unlinkSync(pidFilePath(root, which));
+  } catch {}
+}
+
+/** 存活检测：kill(pid, 0)；EPERM 表示存在但无权限（视为存活） */
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM";
+  }
+}
+
+/** 身份校验：进程 cmdline 是否含我们的标记（防 PID 复用/误杀第三方） */
+async function verifyProcessIdentity(pid, marker) {
+  if (!pid || !marker) return false;
+  try {
+    if (process.platform === "win32") {
+      const out = await execCmd(
+        `powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}' -ErrorAction SilentlyContinue).CommandLine"`,
+        8000
+      );
+      return out.includes(marker);
+    }
+    const cl = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8");
+    return cl.includes(marker);
+  } catch {
+    return false;
+  }
+}
+
+/** 按 cmdline 完整路径（-like 匹配）列出进程 PID——用于对账清扫幽灵进程 */
+async function listPidsByCmdlineLike(pattern, nameFilter) {
+  try {
+    if (process.platform === "win32") {
+      const nf = nameFilter ? `$_.Name -eq '${nameFilter}' -and ` : "";
+      const out = await execCmd(
+        `powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { ${nf}$_.CommandLine -like '*${pattern}*' } | ForEach-Object { $_.ProcessId }"`,
+        10000
+      );
+      return out.split(/\r?\n/).map((s) => parseInt(s.trim(), 10)).filter((n) => Number.isInteger(n) && n > 0);
+    }
+    const out = await execCmd(`pgrep -f '${pattern}' 2>/dev/null`, 8000);
+    return out.split(/\r?\n/).map((s) => parseInt(s.trim(), 10)).filter((n) => Number.isInteger(n) && n > 0);
+  } catch {
+    return [];
+  }
+}
+
+/** 清扫同配置的历史残留（幽灵）进程：强标记=本仓库配置文件的绝对路径 */
+async function killGhostProcesses(root, keepPid, which) {
+  const marker = which === "agent"
+    ? path.join(agentDir(root), "agent.js")
+    : path.join(root, "node-ctl", "visitors.toml");
+  const nameFilter = which === "agent" ? "node.exe" : "frpc.exe";
+  const pids = await listPidsByCmdlineLike(marker, nameFilter);
+  const killed = [];
+  for (const pid of pids) {
+    if (pid === keepPid || pid === process.pid) continue;
+    await killTree(pid);
+    killed.push(pid);
+  }
+  return killed;
+}
+
+/** 直报 Hub 离线（不经 agent；用本机 state.token 认证）——在线→离线即时生效 */
+async function markNodeOffline(root) {
+  const state = readJson(path.join(agentDir(root), "data", "state.json"));
+  const cfg = readJson(path.join(agentDir(root), "node.json"));
+  const hub = cfg?.hub;
+  if (!state?.token || !hub?.address) return { ok: false, error: "未注册或未配置 Hub" };
+  const r = await httpJson("POST", `http://${hub.address}:${hub.port || 18080}/offline`, {}, {
+    "X-Node-Token": state.token,
+  }, 5000);
+  return { ok: r.status === 200 && !!r.json?.ok, status: r.status };
 }
 
 function readJson(p) {
@@ -306,9 +423,12 @@ async function getNodeConfig(root) {
   const state = readJson(path.join(dir, "data", "state.json"));
   let agentRunning = false;
   let agentPid = null;
-  if (cfg?.agent?.port) {
-    agentPid = await findPidByPort(cfg.agent.port);
-    agentRunning = !!agentPid;
+  const recorded = readPidFile(root, "agent");
+  if (recorded && isPidAlive(recorded.pid)) {
+    agentRunning = true;
+    agentPid = recorded.pid;
+  } else if (recorded) {
+    removePidFile(root, "agent");
   }
   const renamed = !!(state?.name && cfg?.name && state.name !== cfg.name);
   let registeredId = state?.id || null;
@@ -336,18 +456,43 @@ function saveNodeConfig(root, cfg) {
 async function startAgent(root) {
   ensureRepoRoot(root);
   const dir = agentDir(root);
-  if (!fs.existsSync(path.join(dir, "agent.js"))) {
-    return { ok: false, error: `未找到 ${path.join(dir, "agent.js")}` };
+  const scriptPath = path.join(dir, "agent.js");
+  if (!fs.existsSync(scriptPath)) {
+    return { ok: false, error: `未找到 ${scriptPath}` };
   }
-  const existing = await getNodeConfig(root);
-  if (existing.agentRunning) {
-    return { ok: false, error: "agent 已在运行", running: true, pid: existing.agentPid };
+  const recorded = readPidFile(root, "agent");
+  if (recorded && isPidAlive(recorded.pid)) {
+    await killGhostProcesses(root, recorded.pid, "agent");
+    return { ok: false, error: "agent 已在运行", running: true, pid: recorded.pid };
+  }
+  if (recorded) removePidFile(root, "agent");
+  // 迁移垫片（升级场景一次性）：无 PID 记录但端口被本机旧版 agent 占用 → 身份校验后认领
+  const cfg = readJson(path.join(dir, "node.json"));
+  const port = cfg?.agent?.port || 41999;
+  const legacyPid = await findPidByPort(port);
+  if (legacyPid) {
+    if (await verifyProcessIdentity(legacyPid, "agent.js")) {
+      writePidFile(root, "agent", legacyPid, "agent.js");
+      await killGhostProcesses(root, legacyPid, "agent");
+      return { ok: false, error: "agent 已在运行（已接管旧实例）", running: true, pid: legacyPid };
+    }
+    return { ok: false, error: `agent 端口 ${port} 被其他进程占用（PID ${legacyPid}），未启动` };
+  }
+  await killGhostProcesses(root, null, "agent");
+  // 崩溃残留清扫：上一代 agent 被强杀时遗留的节点侧 frpc / opencode（按配置路径与配置端口识别）
+  for (const pid of await listPidsByCmdlineLike(path.join(dir, "data", "frpc.toml"), "frpc.exe")) {
+    await killTree(pid);
+  }
+  if (cfg?.opencode?.port) {
+    for (const pid of await listPidsByCmdlineLike(`serve --port ${cfg.opencode.port}`, "opencode.exe")) {
+      await killTree(pid);
+    }
   }
   const logPath = path.join(dir, "data", "agent.log");
   fs.mkdirSync(path.dirname(logPath), { recursive: true });
   const out = fs.openSync(logPath, "a");
   const rt = resolveNodeRuntime();
-  const child = spawn(rt.exe, ["agent.js"], {
+  const child = spawn(rt.exe, [scriptPath], {
     cwd: dir,
     detached: true,
     windowsHide: true,
@@ -356,16 +501,37 @@ async function startAgent(root) {
     stdio: ["ignore", "ignore", out],
   });
   child.unref();
+  writePidFile(root, "agent", child.pid, scriptPath);
+  await new Promise((r) => setTimeout(r, 800));
+  if (!isPidAlive(child.pid)) {
+    removePidFile(root, "agent");
+    const tail = agentLogTail(root, 6).join("\n");
+    return { ok: false, error: "agent 启动后立即退出（检查端口占用或配置）。日志尾部：\n" + tail };
+  }
   return { ok: true, pid: child.pid, runtime: rt.exe };
 }
 
 async function stopAgent(root) {
-  const cfg = readJson(path.join(agentDir(root), "node.json"));
-  const port = cfg?.agent?.port || 41999;
-  const pid = await findPidByPort(port);
-  if (!pid) return { ok: false, error: "未找到 agent 进程（按端口 " + port + " 探测）" };
+  const recorded = readPidFile(root, "agent");
+  let pid = recorded?.pid || null;
+  if (pid && !isPidAlive(pid)) {
+    removePidFile(root, "agent");
+    pid = null;
+  }
+  if (!pid) return { ok: false, error: "agent 未在运行（无有效 PID 记录）" };
+  if (!isPidAlive(pid)) {
+    removePidFile(root, "agent");
+    return { ok: true, pid, note: "进程已退出" };
+  }
+  const marker = recorded?.marker || path.join(agentDir(root), "agent.js");
+  if (!(await verifyProcessIdentity(pid, marker))) {
+    removePidFile(root, "agent");
+    return { ok: false, error: `PID ${pid} 不是本机 agent（可能已被系统复用），未执行停止；记录已清理` };
+  }
   await killTree(pid);
-  return { ok: true, pid };
+  removePidFile(root, "agent");
+  const off = await markNodeOffline(root);
+  return { ok: true, pid, offline: off.ok };
 }
 
 /** 重置节点身份：删除已注册状态与隧道配置（换设备/换节点名时使用） */
@@ -672,25 +838,60 @@ function firstBindPort(root) {
 async function visitorStatus(root) {
   const conf = path.join(root, "node-ctl", "visitors.toml");
   const paused = !!getMasterConfig(root)?.visitorPaused;
-  if (!fs.existsSync(conf)) return { configured: false, running: false, paused };
+  const recorded = readPidFile(root, "visitor");
+  let running = false;
+  let pid = null;
+  if (recorded && isPidAlive(recorded.pid)) {
+    running = true;
+    pid = recorded.pid;
+  } else if (recorded) {
+    removePidFile(root, "visitor");
+  }
   const port = firstBindPort(root);
-  const pid = port ? await findPidByPort(port) : null;
-  return { configured: true, running: !!pid, pid, port, paused };
+  return { configured: fs.existsSync(conf), running, pid, port, paused };
 }
 
 async function stopVisitor(root) {
-  const port = firstBindPort(root);
-  if (!port) return { ok: false, error: "尚未生成 visitors.toml" };
-  const pid = await findPidByPort(port);
-  if (!pid) return { ok: false, error: "隧道未在运行" };
+  const conf = path.join(root, "node-ctl", "visitors.toml");
+  const recorded = readPidFile(root, "visitor");
+  let pid = recorded?.pid || null;
+  if (pid && !isPidAlive(pid)) {
+    removePidFile(root, "visitor");
+    pid = null;
+  }
+  if (!pid) return { ok: false, error: "隧道未在运行（无有效 PID 记录）" };
+  if (!isPidAlive(pid)) {
+    removePidFile(root, "visitor");
+    return { ok: true, pid, note: "进程已退出" };
+  }
+  const marker = recorded?.marker || conf;
+  if (!(await verifyProcessIdentity(pid, marker))) {
+    removePidFile(root, "visitor");
+    return { ok: false, error: `PID ${pid} 不是本机隧道进程（可能已被系统复用），未执行停止；记录已清理` };
+  }
   await killTree(pid);
+  removePidFile(root, "visitor");
   return { ok: true, pid };
 }
 
 async function startVisitor(root) {
   const conf = path.join(root, "node-ctl", "visitors.toml");
   if (!fs.existsSync(conf)) return { ok: false, error: "请先生成隧道配置" };
+  // 迁移垫片（升级场景一次性）：无 PID 记录但端口被本机旧版隧道占用 → 身份校验后认领
+  if (!readPidFile(root, "visitor")) {
+    const legacyPort = firstBindPort(root);
+    const legacyPid = legacyPort ? await findPidByPort(legacyPort) : null;
+    if (legacyPid) {
+      if (await verifyProcessIdentity(legacyPid, conf)) {
+        writePidFile(root, "visitor", legacyPid, conf);
+        await killGhostProcesses(root, legacyPid, "visitor");
+        return { ok: true, port: legacyPort, adopted: true };
+      }
+      return { ok: false, error: `隧道端口 ${legacyPort} 被其他进程占用（PID ${legacyPid}），未启动` };
+    }
+  }
   await stopVisitor(root);
+  await killGhostProcesses(root, null, "visitor");
   const isWin = process.platform === "win32";
   let frpc = path.join(root, "node-agent", "bin", isWin ? "frpc.exe" : "frpc");
   if (!fs.existsSync(frpc)) frpc = "frpc";
@@ -698,9 +899,14 @@ async function startVisitor(root) {
   const out = fs.openSync(logPath, "a");
   const child = spawn(frpc, ["-c", conf], { detached: true, windowsHide: true, stdio: ["ignore", out, out] });
   child.unref();
+  writePidFile(root, "visitor", child.pid, conf);
   const port = firstBindPort(root);
   for (let i = 0; i < 10; i++) {
     await new Promise((r) => setTimeout(r, 1000));
+    if (!isPidAlive(child.pid)) {
+      removePidFile(root, "visitor");
+      return { ok: false, error: "隧道进程启动后立即退出（查看 visitor 日志）" };
+    }
     if (port && (await tcpProbe("127.0.0.1", port))) return { ok: true, port };
   }
   return { ok: false, error: "隧道未能在 10 秒内监听（查看 visitor 日志）" };
@@ -708,6 +914,23 @@ async function startVisitor(root) {
 
 function visitorLogTail(root, maxLines = 120) {
   return tailFile(path.join(root, "node-ctl", "visitor.log"), maxLines);
+}
+
+/** App 退出流程：停隧道 → 停本机节点（整树）→ 直报离线（注册记录保留；其他节点不受影响） */
+async function shutdownAll(root) {
+  const steps = [];
+  if (readPidFile(root, "visitor")) {
+    const vis = await stopVisitor(root);
+    steps.push(vis.ok ? `隧道已停止（PID ${vis.pid}）` : `隧道：${vis.error}`);
+  }
+  if (readPidFile(root, "agent")) {
+    const agt = await stopAgent(root);
+    steps.push(agt.ok ? `节点已停止（PID ${agt.pid}${agt.offline ? "，已标记离线" : ""}）` : `节点：${agt.error}`);
+  } else {
+    const off = await markNodeOffline(root);
+    if (off.ok) steps.push("已标记离线");
+  }
+  return { ok: true, steps };
 }
 
 /** 隧道开关（停用状态持久化）：启用=自动重建并启动；停用=停止进程 */
@@ -836,6 +1059,8 @@ module.exports = {
   startNodeFull,
   ensureVisitor,
   setVisitorEnabled,
+  shutdownAll,
+  markNodeOffline,
   tcpProbe,
   findPidByPort,
   getNodeConfig,

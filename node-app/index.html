@@ -839,7 +839,7 @@
     $("setupOverlay").classList.add("hidden");
   };
   $("btnQuit").onclick = async () => {
-    if (!confirm("退出应用？\n节点 agent 与隧道为独立进程，将继续在后台运行。")) return;
+    if (!confirm("退出应用？\n将停止本机节点与隧道：本节点变为离线（注册身份保留），其他节点不受影响。")) return;
     await ipcRenderer.invoke("app:quit");
   };
 

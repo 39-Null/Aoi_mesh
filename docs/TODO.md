@@ -1,6 +1,17 @@
 # 待办与已知问题（TODO）
 
-> 更新：2026-10-14（首次配置向导 + 托盘常驻）
+> 更新：2026-10-14（生命周期直连化）
+
+## P10 · 生命周期直连化（2026-10-14）
+
+- [x] PID 记账（`agent.pid`/`visitor.pid`）替代 netstat 端口探测：getNodeConfig / visitorStatus / start / stop 全链路去端口化（端口仅为配置值）
+- [x] 停止前 cmdline 身份校验：PID 复用/第三方占用 → 拒杀并清理记录（绝不误杀）
+- [x] App 打开：每次强制启动本机节点 + ensure 隧道；App 退出（before-quit，仅主实例）：停隧道 → 停节点 → 直报离线 → 12s 超时兜底
+- [x] Hub 新增 `POST /offline`（token 认证，立即置离线）——已随本轮部署
+- [x] Linux killTree 进程组回收；agent 自证 pidfile、优雅退出补杀 opencode
+- [x] 升级垫片：无 pidfile 的旧版运行中 agent/隧道 → 端口+身份校验一次性接管记账并清扫幽灵进程
+- [x] 实测：退出全清+即时离线（零残留、pidfile 清理、端口全关）、重开强制恢复、崩溃对账（孤儿 opencode/frpc 自动清扫）、squatter 拒杀不误伤、旧实例接管（含幽灵 frpc 8064 清除）
+- [ ] 下一批：Deepin 同步新版（重打包 kit）
 
 ## P9 · 首次配置向导与托盘常驻（2026-10-14）
 

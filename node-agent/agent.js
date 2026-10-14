@@ -460,6 +460,10 @@ transport.useEncryption = true
 
   async run() {
     log(`opencode-mesh node agent v${VERSION} 启动（node=${this.config.name}）`);
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.writeFileSync(path.join(DATA_DIR, "agent.pid"), JSON.stringify({ pid: process.pid, startedAt: Date.now(), marker: __filename }));
+    } catch {}
     if (!(await this.ensureRegistered())) return;
     this.writeFrpcConfig();
     this.startFrpc();
@@ -473,8 +477,12 @@ transport.useEncryption = true
 
   shutdown() {
     this.stopRequested = true;
-    log("正在退出：清理 frpc…");
+    log("正在退出：清理 frpc / opencode…");
     if (this.frpcChild) this.frpcChild.kill();
+    if (this.opencodeChild) {
+      try { this.opencodeChild.kill(); } catch {}
+    }
+    try { fs.unlinkSync(path.join(DATA_DIR, "agent.pid")); } catch {}
     setTimeout(() => process.exit(0), 1000);
   }
 }

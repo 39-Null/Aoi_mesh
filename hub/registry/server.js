@@ -248,6 +248,14 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
 
+    if (route === "POST /offline") {
+      const entry = findNodeByToken(req.headers["x-node-token"]);
+      if (!entry) return json(res, 401, { ok: false, error: "unauthorized" });
+      entry.lastSeen = new Date(Date.now() - 200_000).toISOString();
+      save();
+      return json(res, 200, { ok: true });
+    }
+
     if (route === "GET /nodes") {
       if (!canManage(req)) return json(res, 401, { ok: false, error: "unauthorized" });
       const list = Object.values(data.nodes).map((n) => ({

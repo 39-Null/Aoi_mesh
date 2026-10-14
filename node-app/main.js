@@ -446,15 +446,43 @@ ipcMain.handle("app:quit", () => {
   app.quit();
 });
 
+/** 启动例程：已配置时每次打开 App 强制拉起本机节点 + 确保隧道 */
+async function autoLaunchMesh() {
+  try {
+    const node = await mesh.getNodeConfig(ROOT);
+    if (node.rootFound !== false && node.cfg?.hub?.address && !node.agentRunning) {
+      await mesh.startAgent(ROOT);
+    }
+    await mesh.ensureVisitor(ROOT);
+  } catch {}
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
-  // 已有实例（含最小化到托盘）在运行：唤起它并退出本次启动
+  // 次级实例：直接退出（不注册任何清理逻辑，避免误杀主实例的进程）
   app.quit();
 } else {
+  // 退出清理（仅主实例）：停隧道 → 停本机节点 → 直报离线；超时兜底后放行退出
+  let quitCleanupDone = false;
+  app.on("before-quit", (e) => {
+    if (quitCleanupDone) return;
+    e.preventDefault();
+    (async () => {
+      try {
+        await Promise.race([
+          mesh.shutdownAll(ROOT).catch(() => {}),
+          new Promise((r) => setTimeout(r, 12000)),
+        ]);
+      } catch {}
+      quitCleanupDone = true;
+      app.quit();
+    })();
+  });
   app.on("second-instance", () => showMainWindow());
   app.whenReady().then(() => {
     createWindow();
     createTray();
+    autoLaunchMesh();
   });
   app.on("window-all-closed", () => {
     if (app.isQuitting) app.quit();
