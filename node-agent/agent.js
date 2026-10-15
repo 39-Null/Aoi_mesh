@@ -21,7 +21,7 @@ const STATE_FILE = path.join(DATA_DIR, "state.json");
 const FRPC_CONFIG = path.join(DATA_DIR, "frpc.toml");
 const AGENT_LOG = path.join(DATA_DIR, "agent.log");
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 function log(...args) {
   const raw = args.join(" ").replace(/\x1b\[[0-9;]*m/g, "").trimEnd();

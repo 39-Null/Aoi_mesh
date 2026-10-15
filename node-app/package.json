@@ -1,13 +1,14 @@
 {
   "name": "opencode-mesh-node-app",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "opencode-mesh node app - local diagnostics and connection management",
   "private": true,
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "make-icon": "node make-icon.js",
-    "pack:linux": "node pack-linux.js"
+    "pack:linux": "node pack-linux.js",
+    "pack:win": "node pack-win.js"
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",
