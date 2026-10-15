@@ -1,6 +1,46 @@
 # 待办与已知问题（TODO）
 
-> 更新：2026-10-14（主控状态自动化 + 窗口收窄）
+> 更新：2026-10-15（安全加固批次 / 密码流程 / 命名统一 / 可移植性）
+
+## P14 · 统一安全加固批次（2026-10-15）
+
+- [x] `/register` 原型链绕过修复：keys/nodes 改无原型对象 + `hasOwnProperty` 校验 + 密钥格式白名单（hex）——E2E 已验证 `__proto__/constructor/toString` 等全部 403
+- [x] registry TLS：install.sh 自签证书生成、`/health` 上报指纹、`/admin/keys` 返回 `密钥.指纹` 组合串
+- [x] 客户端指纹钉扎：agent / node-ctl / App 三端 `pinnedRequest`（握手完成、发送数据前校验 SHA-256；错误指纹立即拒绝）——TLS E2E 通过
+- [x] 加入密钥 TTL（默认 72h，`REGISTRY_JOIN_KEY_TTL_HOURS`，旧密钥无 expiresAt 兼容；恢复注册不受限）——E2E 通过
+- [x] 审计日志（注册/改名/离线/密钥签发/吊销/鉴权失败；0600 权限）
+- [x] Hub 降权：registry/frps 专用非 root 服务用户（chown 数据/日志/证书目录）
+- [x] agent 加固：token 恒时比较；opencode 显式 `--hostname 127.0.0.1`
+- [x] 敏感文件权限收紧：node.json/state.json/nodes.json/visitors.toml/frpc.toml/data.json（chmod 600 / icacls）
+- [x] 组合串解析：App 组网/向导、join.ps1、join.sh（`密钥.指纹` → joinKey 拆出 + hub.fingerprint 落盘）
+- [x] 文档同步：DEPLOY（TLS/迁移顺序/字段/FAQ）、USAGE、DESIGN v0.11
+- [ ] 实机部署：Hub 重跑 install.sh（打印指纹）→ 各节点粘贴 `密钥.指纹` 重启 → 控制端同步 → 全链路验证
+- [ ] 核对阿里云安全组与 firewalld 残留（14100+ 段已无需放行）
+- [ ] （缓做）frps 控制口 TLS；SSH 一次性加固核对清单
+
+## P13 · 密码修改流程重构（2026-10-15）
+
+- [x] 「组网」页移除内联「新密码 / 确认密码」输入；「opencode」行新增 **⚙ 修改密码** 齿轮入口（弹窗）
+- [x] 验证确认：修改需输入**原密码（网络共用密码）**——与本机 node.json 现值比对（Hub 不存密码/指纹，验证在节点本机完成）
+- [x] 校验规则：新密码 ≥8 位、两次一致、不得与原密码相同；错误均有明确提示
+- [x] mesh-core 新增 `changeNodePassword`（主进程内验证与写入）+ IPC `mesh:node:changePassword`
+- [x] 通过后 agent 运行中经本机回环立即重启 opencode 生效（复用 restartLocalOpencode）
+- [x] 功能自测：错原密码 / 短新密码 / 同密码三拒绝 + 正常修改落盘 `restarted:false`（无 agent 场景）
+- [x] 文档同步：USAGE（入口步骤 + FAQ 两行）、DEPLOY §6 字段表、DESIGN v0.10 修订
+- [ ] 实测：真实设备齿轮改密 → 重启 opencode 生效 → 主控派发用新密码验证；双节点统一密码逐台对齐
+
+## P12 · 命名统一与可移植性文档重构（2026-10-15）
+
+- [x] 协议标记更名 opencode-mesh（信封/回执/澄清块；node-ctl 解析兼容旧 aoi-mesh 标记）
+- [x] 协作约定更新（configs/agent-mesh-instructions.md：新标记 + 旧标记过渡兼容说明）
+- [x] 文档命名统一：功能性名称 opencode-mesh；界面展示名保留 Aoi mesh（窗口标题/托盘/向导/导入提示）
+- [x] DEPLOY.md 重构：架构与网络流/数据流、一键化速查、App 安装/卸载引导、配置字段逐项教学、opencode 官方文档外链
+- [x] DESIGN 增补 §3.1 数据流与网络流（三条链路时序图）；README 快速开始改为三角色最短路径
+- [x] 新增 Linux 节点接入脚本 scripts/node/join.sh；join.ps1 支持 frpc 自动获取（-FrpVersion / -FrpLocalZip）
+- [x] start-bot.vbs 相对路径化（不再硬编码绝对路径；支持 OPENCODE_MESH_ROOT 回退）
+- [x] install.sh 防火墙修正：stcp 模式不再放行 14100-19998（公网入向仅 17000/18080）
+- [ ] 各节点同步新版协作约定（git pull + 重启节点 opencode 会话）
+- [ ] 桌面 issue（opencode-mesh-未来发展方向企划）已同步命名，待抄送为 GitHub Issue
 
 ## P11 · 主控状态自动化（2026-10-14）
 
@@ -94,7 +134,7 @@
 - [x] 远程生命周期：本机远程停止/启动 deepin-1 的 opencode ✓
 - [x] 统一密码 `20060210bai` 对齐（修复保存竞态 + agent 配置热重载后两端生效）
 - [x] 任务派发与回收：向 deepin-1 派发 `uname -a`，3.5s 回收真实输出（bzw-PC / Deepin 内核信息）✓
-- [x] fleet 编排集成：主控 4096 注入 fleet + NodeCtl MCP；`fleet_list_nodes` 双节点在线（173/227ms）、`fleet_node_health` 正常 ✓
+- [x] fleet 编排集成：主控 4096 写入 fleet + NodeCtl MCP 配置；`fleet_list_nodes` 双节点在线（173/227ms）、`fleet_node_health` 正常 ✓
 - [ ] （建议）手机 Telegram 实测："让 deepin-1 执行 xxx 并汇报"
 - [ ] BotFather `/revoke` 后，用 App「Token 轮换」换新 token
 

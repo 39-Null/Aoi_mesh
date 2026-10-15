@@ -13,7 +13,7 @@ const USAGE = `opencode-mesh node-ctl
   node-ctl restart <node>              远程重启节点 opencode
   node-ctl fleet-config                输出主控 opencode 的 fleet MCP 配置片段
   node-ctl visitors-config [--out p]   生成主控侧 frpc visitors 配置（stcp 接入）
-  node-ctl dispatch <node> "<任务>"    按 aoi-mesh 协议派发任务（信封+回执解析，复用会话）
+  node-ctl dispatch <node> "<任务>"    按 opencode-mesh 协议派发任务（信封+回执解析，复用会话）
                                        选项：--new 强制新会话；--mode one-shot|session；
                                        --timeout 秒（默认300）；--raw 附原始回复
 
@@ -190,6 +190,7 @@ ${sections.join("\n\n")}
 `;
   const target = outPath || path.join(__dirname, "visitors.toml");
   fs.writeFileSync(target, toml);
+  try { fs.chmodSync(target, 0o600); } catch {}
   console.log(`已生成 ${target}`);
   console.log("");
   for (const n of nodes) {

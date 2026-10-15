@@ -2,7 +2,8 @@
   "registry": {
     "address": "your-hub-address",
     "port": 18080,
-    "adminToken": "REPLACE_WITH_REGISTRY_ADMIN_TOKEN"
+    "adminToken": "REPLACE_WITH_REGISTRY_ADMIN_TOKEN",
+    "fingerprint": ""
   },
   "fleetPassword": "REPLACE_WITH_SHARED_OPENCODE_PASSWORD",
   "nodes": {

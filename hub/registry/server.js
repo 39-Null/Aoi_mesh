@@ -1,4 +1,5 @@
 const http = require("http");
+const https = require("https");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
@@ -12,6 +13,10 @@ const FRPS_ADDR = process.env.REGISTRY_FRPS_ADDR || "127.0.0.1";
 const FRPS_PORT = parseInt(process.env.REGISTRY_FRPS_PORT || "17000", 10);
 const FRP_TOKEN = process.env.REGISTRY_FRP_TOKEN || "";
 const DATA_FILE = process.env.REGISTRY_DATA || path.join(__dirname, "data.json");
+const AUDIT_FILE = process.env.REGISTRY_AUDIT_LOG || path.join(path.dirname(DATA_FILE), "audit.log");
+const TLS_CERT = process.env.REGISTRY_TLS_CERT || "";
+const TLS_KEY = process.env.REGISTRY_TLS_KEY || "";
+const JOIN_KEY_TTL_HOURS = parseFloat(process.env.REGISTRY_JOIN_KEY_TTL_HOURS || "72");
 
 if (!ADMIN_TOKEN) {
   console.error("[registry] 拒绝启动：必须设置 REGISTRY_ADMIN_TOKEN");
@@ -33,6 +38,7 @@ function save() {
   const tmp = DATA_FILE + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
   fs.renameSync(tmp, DATA_FILE);
+  try { fs.chmodSync(DATA_FILE, 0o600); } catch {}
 }
 if (!fs.existsSync(DATA_FILE)) save();
 
@@ -49,6 +55,33 @@ if (!fs.existsSync(DATA_FILE)) save();
   }
   data.nodes = byId;
   if (migrated) save();
+}
+
+// 键集合一律使用无原型对象：任何对原型属性（__proto__ / constructor / toString…）的字符串
+// 查找都必然返回 undefined，从根上消除原型链绕过（配合下方 own() 校验，双保险）
+data.keys = Object.assign(Object.create(null), data.keys || {});
+data.nodes = Object.assign(Object.create(null), data.nodes || {});
+
+/** 仅自有属性判定（防原型链绕过） */
+function own(obj, key) {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function audit(event, fields = {}, req = null) {
+  try {
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      event,
+      ip: (req && req.socket && req.socket.remoteAddress) || "",
+      ...fields,
+    });
+    fs.appendFileSync(AUDIT_FILE, line + "\n", { mode: 0o600 });
+  } catch {}
+}
+
+function joinKeyExpiry() {
+  if (!(JOIN_KEY_TTL_HOURS > 0)) return null;
+  return new Date(Date.now() + JOIN_KEY_TTL_HOURS * 3600_000).toISOString();
 }
 
 function usedPorts() {
@@ -128,32 +161,40 @@ function publicNode(n) {
   };
 }
 
-const server = http.createServer(async (req, res) => {
+async function handleRequest(req, res) {
   const url = new URL(req.url, "http://localhost");
   const route = `${req.method} ${url.pathname}`;
 
   try {
     if (route === "GET /health") {
-      return json(res, 200, { ok: true, nodes: Object.keys(data.nodes).length });
+      return json(res, 200, {
+        ok: true,
+        nodes: Object.keys(data.nodes).length,
+        tls: !!tlsInfo,
+        fingerprint: tlsInfo ? tlsInfo.fingerprint : null,
+      });
     }
 
     if (route === "POST /admin/keys") {
-      if (!canManage(req)) return json(res, 401, { ok: false, error: "unauthorized" });
+      if (!canManage(req)) { audit("auth_fail", { route }, req); return json(res, 401, { ok: false, error: "unauthorized" }); }
       const body = await readBody(req);
       if (body === null) return json(res, 400, { ok: false, error: "bad json" });
       const count = Math.min(Math.max(parseInt(body.count || 1, 10), 1), 20);
       const keys = [];
       for (let i = 0; i < count; i++) {
         const key = crypto.randomBytes(24).toString("hex");
-        data.keys[key] = { createdAt: new Date().toISOString(), usedBy: null };
+        data.keys[key] = { createdAt: new Date().toISOString(), usedBy: null, expiresAt: joinKeyExpiry() };
         keys.push(key);
       }
       save();
-      return json(res, 200, { ok: true, keys });
+      audit("keys_create", { count, ids: keys.map((k) => k.slice(0, 8)) }, req);
+      // TLS 启用时返回「密钥.指纹」组合串：接收方粘贴后自动拆分并钉扎指纹
+      const out = tlsInfo ? keys.map((k) => `${k}.${tlsInfo.fingerprint}`) : keys;
+      return json(res, 200, { ok: true, keys: out, fingerprint: tlsInfo ? tlsInfo.fingerprint : null });
     }
 
     if (route === "GET /admin/frps") {
-      if (!canManage(req)) return json(res, 401, { ok: false, error: "unauthorized" });
+      if (!canManage(req)) { audit("auth_fail", { route }, req); return json(res, 401, { ok: false, error: "unauthorized" }); }
       return json(res, 200, {
         ok: true,
         frps: { addr: FRPS_ADDR, port: FRPS_PORT, token: data.frpToken },
@@ -163,18 +204,28 @@ const server = http.createServer(async (req, res) => {
     if (route === "POST /register") {
       const body = await readBody(req);
       if (body === null) return json(res, 400, { ok: false, error: "bad json" });
-      const { name, joinKey } = body;
+      const { name } = body;
+      // 兼容「密钥.指纹」组合串：仅取密钥段；格式校验先行（不接受非十六进制键名）
+      const joinKey = String(body.joinKey || "").split(".")[0].trim().toLowerCase();
       if (!name || !/^[a-zA-Z0-9_-]{2,32}$/.test(name)) {
         return json(res, 400, { ok: false, error: "invalid name" });
       }
-      const keyRec = data.keys[joinKey];
-      if (!keyRec) return json(res, 403, { ok: false, error: "invalid join key" });
-      // 已绑定：沿用原身份（凭同一密钥重装/恢复；可同步更新显示名）
-      if (keyRec.usedBy && data.nodes[keyRec.usedBy]) {
+      if (!/^[a-f0-9]{16,128}$/.test(joinKey)) {
+        audit("auth_fail", { route, name, reason: "invalid key format" }, req);
+        return json(res, 403, { ok: false, error: "invalid join key" });
+      }
+      const keyRec = own(data.keys, joinKey) ? data.keys[joinKey] : null;
+      if (!keyRec) {
+        audit("auth_fail", { route, name, reason: "unknown key" }, req);
+        return json(res, 403, { ok: false, error: "invalid join key" });
+      }
+      // 已绑定：沿用原身份（凭同一密钥重装/恢复；可同步更新显示名）——恢复不受 TTL 限制
+      if (keyRec.usedBy && own(data.nodes, keyRec.usedBy)) {
         const entry = data.nodes[keyRec.usedBy];
         if (name !== entry.name && !nameTaken(name, entry.id)) entry.name = name;
         entry.lastSeen = new Date().toISOString();
         save();
+        audit("register", { id: entry.id, mode: "restore" }, req);
         return json(res, 200, {
           ok: true,
           restored: true,
@@ -183,8 +234,13 @@ const server = http.createServer(async (req, res) => {
           heartbeatIntervalSec: 60,
         });
       }
+      // 一次性密钥 TTL（仅约束新注册；遗留无 expiresAt 的密钥视为不过期）
+      if (keyRec.expiresAt && Date.now() > Date.parse(keyRec.expiresAt)) {
+        audit("auth_fail", { route, name, reason: "expired key" }, req);
+        return json(res, 403, { ok: false, error: "join key expired" });
+      }
       // 新注册：id = 首次注册名（不可变）；名称/ID 全网唯一，防冒名（不得复用他人身份）
-      if (data.nodes[name] || nameTaken(name, null)) {
+      if (own(data.nodes, name) || nameTaken(name, null)) {
         return json(res, 409, { ok: false, error: "name already registered (id taken); choose another name" });
       }
       const pair = allocatePortPair();
@@ -202,6 +258,7 @@ const server = http.createServer(async (req, res) => {
       data.nodes[entry.id] = entry;
       keyRec.usedBy = entry.id;
       save();
+      audit("register", { id: entry.id, mode: "new" }, req);
       return json(res, 200, {
         ok: true,
         node: publicNode(entry),
@@ -228,6 +285,7 @@ const server = http.createServer(async (req, res) => {
       }
       entry.lastSeen = new Date().toISOString();
       save();
+      if (oldName !== entry.name) audit("rename", { id: entry.id, from: oldName, to: entry.name }, req);
       return json(res, 200, {
         ok: true,
         renamedFrom: oldName !== entry.name ? oldName : null,
@@ -253,11 +311,12 @@ const server = http.createServer(async (req, res) => {
       if (!entry) return json(res, 401, { ok: false, error: "unauthorized" });
       entry.lastSeen = new Date(Date.now() - 200_000).toISOString();
       save();
+      audit("offline", { id: entry.id }, req);
       return json(res, 200, { ok: true });
     }
 
     if (route === "GET /nodes") {
-      if (!canManage(req)) return json(res, 401, { ok: false, error: "unauthorized" });
+      if (!canManage(req)) { audit("auth_fail", { route }, req); return json(res, 401, { ok: false, error: "unauthorized" }); }
       const list = Object.values(data.nodes).map((n) => ({
         id: n.id,
         name: n.name,
@@ -273,17 +332,20 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (route === "POST /admin/revoke") {
-      if (!canManage(req)) return json(res, 401, { ok: false, error: "unauthorized" });
+      if (!canManage(req)) { audit("auth_fail", { route }, req); return json(res, 401, { ok: false, error: "unauthorized" }); }
       const body = await readBody(req);
       if (body === null) return json(res, 400, { ok: false, error: "bad json" });
       const target = body.id || body.name;
-      const entry = data.nodes[target] || Object.values(data.nodes).find((n) => n.name === target) || null;
+      const entry = (typeof target === "string" && own(data.nodes, target) ? data.nodes[target] : null)
+        || Object.values(data.nodes).find((n) => n.name === target)
+        || null;
       if (entry) {
         delete data.nodes[entry.id];
         for (const k of Object.keys(data.keys)) {
           if (data.keys[k].usedBy === entry.id) delete data.keys[k];
         }
         save();
+        audit("revoke", { id: entry.id }, req);
         return json(res, 200, { ok: true, revoked: entry.id });
       }
       return json(res, 404, { ok: false, error: "node not found" });
@@ -293,10 +355,30 @@ const server = http.createServer(async (req, res) => {
   } catch (e) {
     return json(res, 500, { ok: false, error: e.message });
   }
-});
+}
+
+// TLS：配置了证书即启用（自签 + 客户端指纹钉扎）；否则保持 HTTP（兼容/回退）
+let tlsInfo = null;
+let server;
+if (TLS_CERT && TLS_KEY && fs.existsSync(TLS_CERT) && fs.existsSync(TLS_KEY)) {
+  try {
+    const certPem = fs.readFileSync(TLS_CERT);
+    const keyPem = fs.readFileSync(TLS_KEY);
+    const x509 = new crypto.X509Certificate(certPem);
+    tlsInfo = { enabled: true, fingerprint: x509.fingerprint256.replace(/:/g, "").toLowerCase() };
+    server = https.createServer({ cert: certPem, key: keyPem, minVersion: "TLSv1.2" }, handleRequest);
+  } catch (e) {
+    console.error("[registry] TLS 证书加载失败，回退 HTTP：", e.message);
+    server = http.createServer(handleRequest);
+  }
+} else {
+  server = http.createServer(handleRequest);
+}
 
 server.listen(PORT, HOST, () => {
-  console.log(`[registry] listening on http://${HOST}:${PORT}`);
+  console.log(`[registry] listening on ${tlsInfo ? "https" : "http"}://${HOST}:${PORT}`);
+  if (tlsInfo) console.log(`[registry] TLS 指纹（SHA-256）：${tlsInfo.fingerprint}`);
   console.log(`[registry] port range ${PORT_RANGE_START}-${PORT_RANGE_END}, frps ${FRPS_ADDR}:${FRPS_PORT}`);
   console.log(`[registry] data file: ${DATA_FILE}`);
+  console.log(`[registry] audit file: ${AUDIT_FILE}`);
 });

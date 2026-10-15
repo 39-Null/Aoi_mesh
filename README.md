@@ -29,6 +29,14 @@ Hub（公网服务器：注册中心 + frps，管理密钥/节点注册/心跳/�
 - **节点**：`node-agent` 常驻进程，负责注册、心跳、隧道、按 token 鉴权的 opencode 启停接口
 - **控制端**：`node-app`（单代码库多角色：本机/组网/主控）、`node-ctl`（CLI + MCP）、opencode-fleet 编排、Telegram Bot（可选）
 
+**典型数据流**（完整时序图见 [设计文档 §3.1](docs/DESIGN.md)）：
+
+- **入网**：节点 → registry 注册（一次性加入密钥）→ 分配 id / token / 隧道密钥 → frpc 出站建立 stcp 隧道 → 周期心跳
+- **远程生命周期**：主控 → 本机 visitor 回环端口 → 隧道 → 节点 agent → 启停/查询本机 opencode
+- **任务派发**：主控 opencode（fleet MCP / node-ctl）→ 同一隧道 → 节点 opencode 执行 → 回执块原路回收
+
+公网入向仅 Hub 的 `17000`（frp）与 `18080`（registry）；其余全部为出站连接。
+
 ## 仓库结构
 
 ```
@@ -44,6 +52,14 @@ opencode-mesh/
 
 ## 快速开始
 
+三种角色，各自最短路径（完整步骤、每个配置字段的获取方式与示例见 [部署与运维指南](docs/DEPLOY.md)）：
+
+| 角色 | 最短路径 |
+| --- | --- |
+| **Hub**（一台公网服务器） | `git clone` 后 `sudo bash scripts/hub/install.sh` → 生成一次性加入密钥 |
+| **节点**（任意设备） | 打开 App → 首次向导按提示填写 →「保存并启动节点」；或脚本：`scripts\node\join.ps1`（Windows）/ `scripts/node/join.sh`（Linux） |
+| **控制端** | App「主控」页 →「同步节点（自动配置）」；或 `node node-ctl/cli.js list` |
+
 **开发运行**（源码方式，各设备独立安装依赖）：
 
 ```bash
@@ -52,7 +68,7 @@ cd node-app && npm install        # node_modules 不可跨平台/跨设备拷贝
 npm start
 ```
 
-**生产部署**（推荐）：参见 [部署与运维指南](docs/DEPLOY.md)，三步完成：部署 Hub → 各设备接入 → 配置控制端。
+**生产部署**（推荐）：参见 [部署与运维指南](docs/DEPLOY.md)。
 
 **日常使用**：参见 [使用手册](docs/USAGE.md)。
 
@@ -60,8 +76,8 @@ npm start
 
 | 文档 | 内容 |
 | --- | --- |
-| [设计文档](docs/DESIGN.md) | 架构、角色、配置格式、安全设计、路线图 |
-| [部署与运维](docs/DEPLOY.md) | Hub 部署、节点接入、控制端配置、升级/卸载、故障排查 |
+| [设计文档](docs/DESIGN.md) | 架构、数据流/网络流、角色、配置格式、安全设计、路线图 |
+| [部署与运维](docs/DEPLOY.md) | 架构与数据流、一键化部署、App 安装/卸载、配置字段逐项教学、升级、故障排查 |
 | [使用手册](docs/USAGE.md) | App 各页说明、典型操作、CLI 参考、常见问题 |
 | [消息协议](docs/PROTOCOL.md) | 设备间任务信封、回执块、澄清块与信任边界 |
 | [待办与已知问题](docs/TODO.md) | 遗留问题、计划项 |
@@ -94,7 +110,7 @@ git clone <私有仓库地址>
 
 ## 启动别名（可选）
 
-仓库提供启动别名脚本（Windows：`scripts\aliases\Aoi_mesh.cmd`；Linux：`scripts\aliases\Aoi_mesh.sh`），安装到 PATH 后可用简短命令启动 App；命令名可自行重命名。
+仓库提供启动别名脚本（Windows：`scripts\aliases\Aoi_mesh.cmd`；Linux：`scripts\aliases\Aoi_mesh.sh`），安装到 PATH 后可用简短命令启动 App；命令名可自行重命名。`Aoi mesh` 为界面展示名，项目与文档中的功能名称统一为 opencode-mesh。
 
 ```powershell
 # Windows：安装到 PATH
@@ -110,7 +126,9 @@ ln -s "$PWD/scripts/aliases/Aoi_mesh.sh" ~/.local/bin/Aoi_mesh
 ## 安全模型
 
 - 节点 opencode 服务**零公网暴露**：仅 Hub 的注册端口与 frp 控制端口公开
-- 三层凭据：Hub 所有者密钥（应急/兼容）、一次性加入密钥（入网）、节点 token（心跳与受控 API）
+- **registry HTTPS（自签）+ 客户端指纹钉扎**：指纹随加入密钥以 `密钥.指纹` 组合串分发，防路径嗅探与中间人
+- 三层凭据：Hub 所有者密钥（应急/兼容）、一次性加入密钥（默认 72h 过期，可吊销）、节点 token（心跳与受控 API）
+- 审计日志与降权服务：Hub 关键事件留痕；registry / frps 以专用非 root 用户运行；敏感配置文件权限自动收紧
 - 统一修改各节点 opencode 密码后，保存时经回环接口重启本机 opencode 即刻生效；远程节点可在主控页重启
 - 手机端建议为 Bot 单独轮换 token，不与上述凭据混用
 

@@ -84,8 +84,8 @@
   .nodeBtns { margin: 0; }
   .idchip { font-size: 12px; color: #7d8695; font-family: Consolas, monospace; user-select: text; padding-top: 3px; }
   .idchip.set { color: #c6ccd6; }
-  /* 首次配置向导 */
-  #setupOverlay { position: fixed; inset: 0; background: rgba(8, 10, 14, 0.72); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 18px; }
+  /* 弹层（首次配置向导 / 修改密码） */
+  .overlay { position: fixed; inset: 0; background: rgba(8, 10, 14, 0.72); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 18px; }
   .setupCard { background: #171a21; border: 1px solid #2a2f3a; border-radius: 12px; padding: 18px 18px 14px; width: 100%; max-width: 520px; max-height: 92vh; overflow: auto; }
   .setupTitle { font-size: 16px; font-weight: 600; }
   .setupSub { font-size: 12px; color: #8a94a6; margin: 6px 0 12px; }
@@ -164,9 +164,8 @@
       <div class="cardTitle">节点配置（本机加入网络）</div>
       <div class="fl"><label>节点名</label><input id="inpNodeName" class="grow" type="text" placeholder="显示名，可随时修改" /></div>
       <div class="fl"><label>注册 id</label><span id="nodeIdChip" class="idchip">…</span></div>
-      <div class="fl"><label>加入密钥</label><input id="inpJoinKey" class="grow" type="text" placeholder="一次性密钥" /></div>
-      <div class="fl"><label>opencode</label><input id="inpOcPort" class="short" type="number" placeholder="端口 4096" /><input id="inpOcPass" class="grow" type="password" placeholder="新密码" /></div>
-      <div class="fl"><label>确认密码</label><input id="inpOcPass2" class="grow" type="password" placeholder="再次输入新密码" /><span id="ocPassHint" class="dim"></span></div>
+      <div class="fl"><label>加入密钥</label><input id="inpJoinKey" class="grow" type="text" placeholder="一次性密钥（或 密钥.指纹 组合串）" /></div>
+      <div class="fl"><label>opencode</label><input id="inpOcPort" class="short" type="number" placeholder="端口 4096" /><button id="btnPassOpen" class="mini ghost" title="修改 opencode 密码（需验证原网络共用密码）">⚙ 修改密码</button><span id="ocPassHint" class="dim"></span></div>
       <div class="fl"><label>agent 端口</label><input id="inpAgentPort" class="short" type="number" placeholder="41999" /></div>
       <div class="fl"><label>frpc 路径</label><input id="inpFrpc" class="grow" type="text" placeholder="bin/frpc.exe" /></div>
       <div class="btns" style="margin-top:8px; margin-bottom:0;">
@@ -247,13 +246,13 @@
     </section>
   </section>
 
-  <div id="setupOverlay" class="hidden">
+  <div id="setupOverlay" class="overlay hidden">
     <div class="setupCard">
       <div class="setupTitle">首次使用 · 快速配置</div>
       <div class="setupSub">将本机接入 Aoi mesh 网络：填写后点「保存并启动节点」。仅把本机当控制端使用可直接跳过。</div>
       <div class="fl"><label>节点名</label><input id="setupName" class="grow" type="text" placeholder="例如 dev-node-2" /></div>
       <div class="fl"><label>Hub 地址</label><input id="setupHubAddr" class="grow" type="text" placeholder="例如 1.2.3.4" /><input id="setupHubPort" class="short" type="number" placeholder="18080" /></div>
-      <div class="fl"><label>加入密钥</label><input id="setupJoinKey" class="grow" type="text" placeholder="一次性加入密钥" /></div>
+      <div class="fl"><label>加入密钥</label><input id="setupJoinKey" class="grow" type="text" placeholder="一次性密钥（或 密钥.指纹 组合串）" /></div>
       <div class="fl"><label>opencode</label><input id="setupOcPort" class="short" type="number" placeholder="4096" /><input id="setupOcPass" class="grow" type="password" placeholder="访问密码（留空自动生成）" /></div>
       <div class="fl"><label>确认密码</label><input id="setupOcPass2" class="grow" type="password" placeholder="再次输入密码" /></div>
       <div class="fl"><label>agent 端口</label><input id="setupAgentPort" class="short" type="number" placeholder="41999" /></div>
@@ -262,6 +261,21 @@
         <button id="btnSetupSkip" class="mini ghost">仅作为控制端使用</button>
       </div>
       <div id="setupOp" class="dim" style="font-size:12px; margin-top:8px; min-height:16px;"></div>
+    </div>
+  </div>
+
+  <div id="passOverlay" class="overlay hidden">
+    <div class="setupCard">
+      <div class="setupTitle">修改 opencode 密码</div>
+      <div class="setupSub">需先验证原网络共用密码（各节点统一的 opencode 密码）。如各节点密码统一，修改后请逐节点同步保持一致。</div>
+      <div class="fl"><label>原密码</label><input id="passOld" class="grow" type="password" placeholder="当前网络共用密码" autocomplete="off" /></div>
+      <div class="fl"><label>新密码</label><input id="passNew" class="grow" type="password" placeholder="至少 8 位" autocomplete="off" /></div>
+      <div class="fl"><label>确认新密码</label><input id="passNew2" class="grow" type="password" placeholder="再次输入新密码" autocomplete="off" /></div>
+      <div class="btns" style="margin-top:10px;">
+        <button id="btnPassSave" class="mini">验证并保存</button>
+        <button id="btnPassCancel" class="mini ghost">取消</button>
+      </div>
+      <div id="passOp" class="dim" style="font-size:12px; margin-top:8px; min-height:16px;"></div>
     </div>
   </div>
 
@@ -416,7 +430,7 @@
     $("inpNodeName").value = cfg.name || "";
     $("inpHubAddr").value = cfg.hub?.address || "";
     $("inpHubPort").value = cfg.hub?.port || 18080;
-    // 注意：不清空「加入密钥 / opencode 密码」输入框——避免异步刷新竞态吞掉用户刚输入的内容
+    // 注意：不清空「加入密钥」输入框——避免异步刷新竞态吞掉用户刚输入的内容
     $("inpOcPort").value = cfg.opencode?.port || 4096;
     $("inpAgentPort").value = cfg.agent?.port || 41999;
     const passHint = $("ocPassHint");
@@ -464,8 +478,6 @@
     const hubPort = parseInt($("inpHubPort").value, 10) || 18080;
     const joinKeyTyped = $("inpJoinKey").value.trim();
     const ocPort = parseInt($("inpOcPort").value, 10) || 4096;
-    const passTyped = $("inpOcPass").value.trim();
-    const pass2Typed = $("inpOcPass2").value.trim();
     const agentPort = parseInt($("inpAgentPort").value, 10) || 41999;
     const frpcBin = $("inpFrpc").value.trim() || "bin/frpc.exe";
 
@@ -473,17 +485,14 @@
     const old = r.cfg || {};
     if (!/^[a-z0-9_-]{2,32}$/.test(nameRaw)) { setOp("节点名不合法（2-32 位字母数字下划线中划线）", "bad"); return { ok: false }; }
     if (!hubAddr) { setOp("请填写 Hub 地址", "bad"); return { ok: false }; }
-    if (passTyped && !pass2Typed) { setOp("已输入新密码，请在「确认密码」中再次输入校验", "bad"); return { ok: false }; }
-    if (passTyped && pass2Typed !== passTyped) { setOp("两次输入的密码不一致，请重新输入", "bad"); return { ok: false }; }
     const joinKey = joinKeyTyped || old.joinKey || "";
     if (!joinKey) { setOp("首次加入需要填写加入密钥", "bad"); return { ok: false }; }
-    const oldPass = old.opencode?.password || "";
-    let password = passTyped || oldPass;
+    // 密码不随此表单修改（走「⚙ 修改密码」弹窗 + 原密码验证）；此处仅沿用现值，首次配置时自动生成
+    let password = old.opencode?.password || "";
     if (!password) {
       password = Array.from(crypto.getRandomValues(new Uint8Array(18)))
         .map((b) => b.toString(16).padStart(2, "0")).join("");
     }
-    const passwordChanged = !!passTyped && passTyped !== oldPass;
     const cfg = {
       name: nameRaw,
       hub: { address: hubAddr, port: hubPort },
@@ -497,41 +506,25 @@
       setOp("保存失败：" + (saveRes?.error || "未知错误"), "bad");
       return { ok: false };
     }
-    return { ok: true, passwordChanged, agentRunning: !!r.agentRunning };
+    return { ok: true };
   }
 
-  /** 保存后的公共处理：清空已提交的敏感输入 + 密码变更即刻生效链 */
-  async function afterNodeSave(res) {
+  /** 保存后的公共处理：清空已提交的敏感输入（密码不在本表单修改） */
+  async function afterNodeSave() {
     $("inpJoinKey").value = "";
-    $("inpOcPass").value = "";
-    $("inpOcPass2").value = "";
-    const passHint = $("ocPassHint");
-    if (passHint) passHint.textContent = "已设置";
-    if (res.passwordChanged) {
-      if (res.agentRunning) {
-        const rr = await ipcRenderer.invoke("mesh:node:restartOpencode");
-        setOp(
-          rr.ok ? "密码已更新：本机 opencode 已用新密码重启 ✓" : "密码已保存，但 opencode 重启失败：" + rr.error,
-          rr.ok ? "ok" : "bad"
-        );
-      } else {
-        setOp("密码已保存；启动节点后将自动以新密码运行", "ok");
-      }
-    }
   }
 
   $("btnNodeSave").onclick = () => withBusy($("btnNodeSave"), "保存中…", async () => {
     const res = await saveNodeForm();
     if (!res.ok) return;
     setOp("节点配置已保存", "ok");
-    await afterNodeSave(res);
+    await afterNodeSave();
     await loadNodeForm();
   });
   $("btnNodeStart").onclick = () => withBusy($("btnNodeStart"), "启动中…", async () => {
     const saveRes = await saveNodeForm();
     if (!saveRes.ok) return;
-    // 密码变更时先让 opencode 以新密码重启（本机回环），随后 agent 启动检查会直接通过
-    await afterNodeSave(saveRes);
+    await afterNodeSave();
     setOp("正在启动节点（含隧道）…");
     let r = await ipcRenderer.invoke("mesh:node:startFull");
     if (!r.ok && r.running) {
@@ -558,6 +551,40 @@
     const r = await ipcRenderer.invoke("mesh:node:reset");
     setOp(r.ok ? `已重置（删除：${(r.removed || []).join(", ") || "无文件"}）` : `重置失败：${r.error}`, r.ok ? "ok" : "bad");
     await loadNodeForm();
+  });
+
+  /* ---------------- 修改 opencode 密码（⚙ 齿轮入口；需验证原密码） ---------------- */
+  $("btnPassOpen").onclick = () => {
+    $("passOld").value = "";
+    $("passNew").value = "";
+    $("passNew2").value = "";
+    const po = $("passOp");
+    po.textContent = "";
+    po.className = "dim";
+    $("passOverlay").classList.remove("hidden");
+    $("passOld").focus();
+  };
+  $("btnPassCancel").onclick = () => $("passOverlay").classList.add("hidden");
+  $("btnPassSave").onclick = () => withBusy($("btnPassSave"), "验证中…", async () => {
+    const po = $("passOp");
+    const fail = (m) => { po.textContent = m; po.className = "bad"; };
+    const oldPass = $("passOld").value.trim();
+    const newPass = $("passNew").value.trim();
+    const newPass2 = $("passNew2").value.trim();
+    if (!oldPass) return fail("请输入原密码（当前网络共用密码）");
+    if (newPass.length < 8) return fail("新密码过短（至少 8 位）");
+    if (newPass2 !== newPass) return fail("两次输入的新密码不一致");
+    const r = await ipcRenderer.invoke("mesh:node:changePassword", { oldPassword: oldPass, newPassword: newPass });
+    if (!r?.ok) return fail(r?.error || "修改失败");
+    po.className = "ok";
+    po.textContent = r.restarted
+      ? "密码已更新：本机 opencode 已用新密码重启 ✓"
+      : "密码已更新；启动节点后将自动以新密码运行";
+    $("passOld").value = "";
+    $("passNew").value = "";
+    $("passNew2").value = "";
+    await loadNodeForm();
+    setTimeout(() => $("passOverlay").classList.add("hidden"), 1400);
   });
   async function loadAgentLog() {
     const lines = await ipcRenderer.invoke("mesh:node:log");
@@ -588,6 +615,7 @@
         address: hubAddr,
         port: parseInt($("inpHubPort").value, 10) || 18080,
         adminToken: $("inpRegToken").value.trim() || old.registry?.adminToken || "",
+        fingerprint: old.registry?.fingerprint || "",
       },
       fleetPassword: $("inpFleetPass").value.trim() || old.fleetPassword || "",
       nodes: old.nodes || {},
@@ -606,7 +634,7 @@
     const res = await saveNodeForm();
     if (!res.ok) return;
     setOp("Hub 连接已保存（节点与控制端两处已同步）", "ok");
-    await afterNodeSave(res);
+    await afterNodeSave();
     await loadNodeForm();
   });
   $("btnNodeSync").onclick = () => withBusy($("btnNodeSync"), "同步中…", async () => {

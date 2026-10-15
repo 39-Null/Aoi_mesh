@@ -1,7 +1,7 @@
-# OpenCode Mesh · 设计文档
+# opencode-mesh · 设计文档
 
-- 版本：v0.6
-- 状态：P4 已验收（跨设备派发闭环）；消息协议 v1、id 身份模型与隧道自动化定稿
+- 版本：v0.11
+- 状态：P4 已验收（跨设备派发闭环）；消息协议 v1 已随项目更名（新标记 `[opencode-mesh ...]`，兼容旧 `[aoi-mesh ...]`）；id 身份模型与隧道自动化定稿；密码修改采用「齿轮入口 + 原密码本机验证」；安全加固批次落地（registry TLS 指纹钉扎 / 原型链修复 / 审计 / TTL / 非 root 服务）
 - 许可：MIT
 
 ---
@@ -16,6 +16,9 @@
 - v0.5 → v0.6：**id 身份模型落地**——registry 以**不可变注册 id**（=首次注册名，如 `dev-node-1`）为键，名称（name）为任意可改的显示标签（全网唯一）；`/register` 同密钥恢复并同步显示名、新注册重名 409（修复同名冒领 token 隐患）；心跳/管理按 token 定位；frp 代理名与 visitors 全部改用 id（改名零影响隧道）；App「组网」页新增注册 id 展示（固定灰字）、节点名可编辑；「主控」节点列表改为卡片式（名称+在线徽标+id+端口/隧道信息+操作）；初始窗口加宽至 620
 - v0.6 → v0.7：**首次使用向导**（未配置时自动弹出快速配置；可跳过为纯控制端）；**托盘常驻**——关闭窗口=最小化到系统托盘（首次气泡提示、托盘菜单含显示/退出）、单实例锁（重复启动唤起已有窗口）、「本机」页新增退出按钮；明确生命周期语义：agent 与 frpc 为独立进程，注册与隧道不依赖 App，退出 App 不影响外部设备连接本机
 - v0.7 → v0.8：**进程生命周期直连化**——本地 agent / visitor 的发现与停止由 netstat 端口探测改为 **PID 记账（pidfile）+ 存活检测（kill(pid,0)）+ cmdline 身份校验**，端口仅作为服务配置值；killTree 在 Linux 改为进程组回收（消除孤儿）；agent 自证 pidfile 且优雅退出补杀 opencode；**App 打开 = 强制启动本机节点与隧道，App 退出 = 停止两者并直报 Hub 离线**（registry 新增 `POST /offline`，在线→离线即时生效；注册记录保留、其他节点不受影响）；关窗仍为托盘最小化
+- v0.8 → v0.9：**命名统一与部署文档重构**——文档与代码统一使用 **opencode-mesh**（功能性名称），界面展示名保留 **Aoi mesh**（窗口标题 / 托盘 / 向导）；消息协议标记更名 `[opencode-mesh v1]` 系列（解析端与协作约定兼容旧 `[aoi-mesh ...]`）；DEPLOY.md 重构——架构与数据流、App 安装/卸载引导、配置字段逐项教学、opencode 相关配置改为官方文档外链；新增 Linux 节点接入脚本（`scripts/node/join.sh`）与 frpc 自动获取
+- v0.9 → v0.10：**密码修改流程重构**——「组网」页内联密码输入移除，改为「opencode」行 **⚙ 齿轮弹窗**；修改需先输入**原密码（网络共用密码）验证确认**——比对发生在**节点本机**（mesh-core 与 node.json 现值比对，主进程内完成），Hub 不存密码/指纹；通过后写入配置，agent 运行中经本机回环立即重启 opencode 生效；新密码最少 8 位、与原密码相同将被拒绝
+- v0.10 → v0.11：**统一安全加固批次**——`/register` 修复原型链绕过（keys/nodes 改无原型对象 + 自有属性校验 + 密钥格式白名单）；registry 启用**自签 TLS + 客户端指纹钉扎**（指纹随加入密钥以 `密钥.指纹` 组合串分发；握手完成、发送数据前校验，防中间人）；加入密钥默认 72h TTL；审计日志（注册/吊销/改名/密钥签发/鉴权失败）；Hub 服务降权为非 root 专用用户；agent token 恒时比较、opencode 显式 `--hostname 127.0.0.1`；敏感文件（node.json/state.json/nodes.json/visitors.toml/frpc.toml/data.json/audit.log）权限收紧（chmod 600 / Windows icacls）
 
 ## 1. 定位与设计原则
 
@@ -65,12 +68,66 @@
 3. 主控通过 NodeCtl 工具（MCP 或 CLI）→ 本机 visitor 回环端口 → stcp 隧道 → 目标机 agent → `spawn opencode serve` → 健康检查 → 回报 ready
 4. 随后 fleet 经同一链路向该节点 opencode 派发任务，结果原路回收
 
+### 3.1 数据流与网络流（三条典型链路）
+
+**网络流要点**：
+
+- 公网**入向**仅 Hub 的 `17000`（frp 控制口）与 `18080`（registry）；其余全部是设备到 Hub 的**出站**连接（NAT 友好，无公网 IP 亦可）
+- 节点与主控之间没有物理直连：两条出站隧道在 Hub 的 frps 汇合，stcp 内容加密
+- 主控侧所有节点端口只绑定 `127.0.0.1`（visitor 回环），不回环外暴露
+
+**链路 A · 入网注册与隧道建立**：
+
+```mermaid
+sequenceDiagram
+  participant N as 节点（App / agent）
+  participant R as Hub registry
+  participant F as Hub frps
+  N->>R: POST /register（一次性加入密钥）
+  R-->>N: 注册 id / agentToken / stcpSecret / 端口分配
+  N->>F: frpc 出站建立 stcp 代理（加密）
+  loop 周期心跳
+    N->>R: POST /heartbeat（token 认证）
+  end
+```
+
+**链路 B · 远程生命周期（主控 → 节点 agent）**：
+
+```mermaid
+sequenceDiagram
+  participant M as 主控（node-ctl / MCP / App）
+  participant V as 主控 visitor（127.0.0.1:141xx）
+  participant F as Hub frps
+  participant A as 节点 agent
+  participant O as 节点 opencode
+  M->>V: HTTP 本机回环（X-Agent-Token）
+  V->>F: stcp 隧道（加密）
+  F->>A: 转发至节点 agent
+  A->>O: start / stop / restart / status
+  A-->>M: 运行状态（PID / 健康）原路返回
+```
+
+**链路 C · 任务派发与回执（消息协议 v1）**：
+
+```mermaid
+sequenceDiagram
+  participant M as 主控 opencode（fleet MCP / node-ctl）
+  participant V as 主控 visitor（127.0.0.1:141xx）
+  participant F as Hub frps
+  participant O as 节点 opencode
+  M->>V: POST /session/:id/message（信封 [opencode-mesh v1]）
+  V->>F: stcp 隧道（加密）
+  F->>O: 转发至节点 opencode
+  O->>O: 按协作约定执行任务
+  O-->>M: 回执块 [opencode-mesh-result v1]
+```
+
 ## 4. 统一 App（单代码库 · 单安装包 · 角色=配置）
 
 - 同一 Electron 程序装在所有设备；行为由 `node.toml` 开关决定：
   `network.enabled` / `opencode`（总是） / `telegram.token`（可选） / `master.enabled`（可选）
 - **GUI 壳 + headless 内核**：核心逻辑在共享 CLI 内核，Electron 仅为壳；Linux 服务器跑 headless 模式（同配置格式），fork 者可纯脚本使用
-- **MCP 自动写入**：开启 master → 备份 `opencode.jsonc` → 合并注入 fleet + NodeCtl 配置 → 失败自动回滚；设置提供"仅生成片段"切换（默认自动）
+- **MCP 自动写入**：开启 master → 备份 `opencode.jsonc` → 合并写入 fleet + NodeCtl 配置 → 失败自动回滚；设置提供"仅生成片段"切换（默认自动）
 - 托盘常驻（桌面设备）；systemd / 启动文件夹（服务器）
 - **界面结构**（v1.3）：「组网」页承载**全部配置**（Hub 连接单点双写、本机节点身份、控制端可选配置与导出/导入）；「主控」页为**纯操作台**（节点同步与远程启停、**生成加入密钥**、隧道、fleet 片段）
 - **多控制端 + 平权**：无固定主控；任意设备注册后即可管理全网（凭据平权，所有者密钥兼容）；控制端配置可导出/导入一键复制
@@ -150,12 +207,16 @@ enabled = false
 | 威胁 | 对策 |
 | --- | --- |
 | 公网端口扫描 | **stcp：节点服务零公网暴露**；公网仅 frp 控制口（token）与 registry（admin/join 密钥） |
+| registry 嗅探 / 中间人 | **HTTPS（自签）+ 客户端指纹钉扎**：指纹随加入密钥以 `密钥.指纹` 分发，握手完成、发送数据前校验；HTTP 仅作未启用 TLS 的兼容回退 |
 | 隧道窃听 | stcp secretKey + `transport.useEncryption` 内容加密（双向一致） |
-| 加入密钥泄露 | 一次性密钥 + 可吊销 + 注册留痕 |
-| 节点被越权操作 | agent 仅生命周期命令 + agent token；opencode `permission` 模板（deny 默认；ask → 主控远程批） |
+| 加入密钥泄露 | 一次性密钥 + 可吊销 + **默认 72h TTL** + 注册/吊销审计留痕 |
+| 恶意输入绕过鉴权 | keys/nodes 使用无原型对象 + 自有属性校验；加入密钥格式白名单（hex） |
+| Hub 进程失陷 | registry / frps 以专用非 root 用户运行（最小权限） |
+| 本机凭据文件泄露 | node.json / state.json / nodes.json / visitors.toml / frpc.toml / data.json / audit.log 权限收紧（Linux chmod 600；Windows icacls 仅当前用户） |
+| 节点被越权操作 | agent 仅生命周期命令 + agent token（恒时比较）；opencode `permission` 模板（deny 默认；ask → 主控远程批） |
 | 主控侧访问 | visitor 仅绑定 127.0.0.1（不回环外暴露）；stcp 密钥仅存节点本地与 registry（admin 可见） |
 | 开源泄露 | 示例全部占位符；`.gitignore` 覆盖 `.env`/密钥/`nodes.json`/`state.json`；真实配置只存本地 |
-| 管理权限模型 | **平权**（v0.3）：任意注册节点可管理/邀请/吊销；所有者密钥兼容保留，可按需收紧 |
+| 管理权限模型 | **平权**（v0.3）：任意注册节点可管理/邀请/吊销；所有者密钥兼容保留，可按需收紧（成员间管理面隔离属路线图模块 D） |
 
 ## 9. 网络后端抽象（为 fork 者预留）
 

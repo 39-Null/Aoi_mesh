@@ -1,5 +1,8 @@
 const fs = require("fs");
 const path = require("path");
+const http = require("http");
+const tls = require("tls");
+const crypto = require("crypto");
 
 function loadConfig(explicit) {
   const candidates = [
@@ -61,40 +64,91 @@ function registryAuth(reg, repo) {
   const local = localNode(repo || repoRoot());
   const address = (reg && reg.address) || local.hub?.address || "";
   const port = (reg && reg.port) || local.hub?.port || 18080;
+  const fingerprint = (reg && reg.fingerprint) || local.hub?.fingerprint || "";
   const headers = {};
   if (local.token) headers["X-Node-Token"] = local.token;
   if (reg && reg.adminToken) headers["X-Admin-Token"] = reg.adminToken;
-  return { address, port, headers };
+  return { address, port, headers, fingerprint };
+}
+
+/** 指纹钉扎 HTTPS 请求：自签证书场景跳过 CA 链校验，但在握手完成后、发送任何数据之前校验 SHA-256 指纹 */
+function pinnedRequest({ hostname, port, method = "GET", path: reqPath = "/", headers = {}, body, fingerprint, timeoutMs = 8000 }) {
+  return new Promise((resolve) => {
+    const expected = String(fingerprint || "").replace(/:/g, "").toLowerCase();
+    let done = false;
+    const settle = (v) => { if (!done) { done = true; resolve(v); } };
+    const socket = tls.connect({ host: hostname, port, rejectUnauthorized: false, minVersion: "TLSv1.2" });
+    socket.setTimeout(timeoutMs, () => { socket.destroy(); settle({ status: 0, json: null, text: "timeout" }); });
+    socket.once("error", (e) => settle({ status: 0, json: null, text: e.message }));
+    socket.once("secureConnect", () => {
+      let fp = "";
+      try {
+        const cert = socket.getPeerCertificate(true);
+        if (cert && cert.raw) fp = crypto.createHash("sha256").update(cert.raw).digest("hex");
+      } catch {}
+      if (!fp || fp !== expected) {
+        socket.destroy();
+        settle({ status: 0, json: null, text: "certificate fingerprint mismatch（证书指纹不匹配，可能遭遇中间人）" });
+        return;
+      }
+      const req = http.request(
+        {
+          createConnection: () => socket,
+          hostname, port, method, path: reqPath,
+          headers: { "Content-Type": "application/json", ...headers },
+          timeout: timeoutMs,
+        },
+        (res) => {
+          let buf = "";
+          res.on("data", (c) => (buf += c));
+          res.on("end", () => {
+            let json = null;
+            try { json = JSON.parse(buf); } catch {}
+            settle({ status: res.statusCode, json, text: buf });
+          });
+        }
+      );
+      req.on("timeout", () => { req.destroy(); settle({ status: 0, json: null, text: "timeout" }); });
+      req.on("error", (e) => settle({ status: 0, json: null, text: e.message }));
+      if (body !== undefined) req.write(JSON.stringify(body));
+      req.end();
+    });
+  });
+}
+
+/** registry 请求：配置了指纹走钉扎 HTTPS；否则维持原有 HTTP（未启用 TLS 的旧 Hub 兼容） */
+async function registryFetch(a, method, p, body, timeoutMs = 8000) {
+  if (a.fingerprint) {
+    return pinnedRequest({ hostname: a.address, port: a.port, method, path: p, headers: a.headers, body, fingerprint: a.fingerprint, timeoutMs });
+  }
+  try {
+    const res = await fetch(`http://${a.address}:${a.port}${p}`, {
+      method,
+      headers: { "Content-Type": "application/json", ...a.headers },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const text = await res.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch {}
+    return { status: res.status, json, text };
+  } catch (e) {
+    return { status: 0, json: null, text: e.message };
+  }
 }
 
 async function registryNodes(reg) {
   const a = registryAuth(reg);
   if (!a.address) return null;
-  try {
-    const res = await fetch(`http://${a.address}:${a.port}/nodes`, {
-      headers: a.headers,
-      signal: AbortSignal.timeout(5000),
-    });
-    const j = await res.json();
-    return j.ok ? j.nodes : null;
-  } catch {
-    return null;
-  }
+  const r = await registryFetch(a, "GET", "/nodes", undefined, 5000);
+  return r.status === 200 && r.json?.ok ? r.json.nodes : null;
 }
 
 async function registryFrps(reg) {
   const a = registryAuth(reg);
   if (!a.address) return null;
-  try {
-    const res = await fetch(`http://${a.address}:${a.port}/admin/frps`, {
-      headers: a.headers,
-      signal: AbortSignal.timeout(5000),
-    });
-    const j = await res.json();
-    return j.ok ? j.frps : null;
-  } catch {
-    return null;
-  }
+  const r = await registryFetch(a, "GET", "/admin/frps", undefined, 5000);
+  return r.status === 200 && r.json?.ok ? r.json.frps : null;
 }
 
 async function agentCall(nodeCfg, method, endpoint, timeoutMs) {
@@ -127,10 +181,11 @@ async function agentHealth(nodeCfg) {
   }
 }
 
-/* ==================== aoi-mesh 协议 v1（信封 / 回执 / 派发） ==================== */
+/* ==================== opencode-mesh 协议 v1（信封 / 回执 / 派发） ==================== */
 
 function saveConfigFile(filePath, cfg) {
   fs.writeFileSync(filePath, JSON.stringify(cfg, null, 2));
+  try { fs.chmodSync(filePath, 0o600); } catch {}
 }
 
 function newTaskId(prefix = "t") {
@@ -139,7 +194,7 @@ function newTaskId(prefix = "t") {
 
 function wrapEnvelope({ from, task, mode = "one-shot", body }) {
   return [
-    "[aoi-mesh v1]",
+    "[opencode-mesh v1]",
     `from: ${from}`,
     `task: ${task}`,
     `mode: ${mode}`,
@@ -152,7 +207,8 @@ function wrapEnvelope({ from, task, mode = "one-shot", body }) {
 function parseResultBlock(text) {
   const s = String(text || "");
   let body = null;
-  const strict = /\[aoi-mesh-result v1\]([\s\S]*?)\[\/aoi-mesh-result\]/i.exec(s);
+  // 优先新标记；兼容旧标记 [aoi-mesh-result v1]（历史名称，含混用开闭标签）
+  const strict = /\[(?:opencode|aoi)-mesh-result v1\]([\s\S]*?)\[\/(?:opencode|aoi)-mesh-result\]/i.exec(s);
   if (strict) {
     body = strict[1];
   } else {
@@ -199,7 +255,7 @@ async function opencodeApi(nodeCfg, method, endpoint, body, timeoutMs = 30000) {
   }
 }
 
-/** 按 aoi-mesh 协议派发任务（复用节点会话；解析回执块） */
+/** 按 opencode-mesh 协议派发任务（复用节点会话；解析回执块） */
 async function dispatchToNode(configPath, config, nodeName, body, opts = {}) {
   const hit = resolveNodeEntry(config, nodeName);
   if (!hit?.node?.opencodeUrl) throw new Error(`节点 "${nodeName}" 缺少 opencodeUrl（先在 App「主控」页同步节点）`);
@@ -218,7 +274,7 @@ async function dispatchToNode(configPath, config, nodeName, body, opts = {}) {
     if (probe.status !== 200) sessionId = null;
   }
   if (!sessionId) {
-    const created = await opencodeApi(nodeCfg, "POST", "/session", { title: `aoi-mesh ${from}` }, 15000);
+    const created = await opencodeApi(nodeCfg, "POST", "/session", { title: `opencode-mesh ${from}` }, 15000);
     if (created.status !== 200 || !created.json?.id) {
       throw new Error(`创建会话失败: HTTP ${created.status} ${String(created.text).slice(0, 120)}`);
     }
@@ -266,6 +322,9 @@ module.exports = {
   agentHealth,
   registryNodes,
   registryFrps,
+  registryAuth,
+  registryFetch,
+  pinnedRequest,
   saveConfigFile,
   newTaskId,
   wrapEnvelope,

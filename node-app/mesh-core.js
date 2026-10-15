@@ -8,6 +8,9 @@ const fs = require("fs");
 const path = require("path");
 const net = require("net");
 const os = require("os");
+const http = require("http");
+const tls = require("tls");
+const crypto = require("crypto");
 const { spawn, exec } = require("child_process");
 
 /* ============================ 基础工具 ============================ */
@@ -179,9 +182,10 @@ async function markNodeOffline(root) {
   const cfg = readJson(path.join(agentDir(root), "node.json"));
   const hub = cfg?.hub;
   if (!state?.token || !hub?.address) return { ok: false, error: "未注册或未配置 Hub" };
-  const r = await httpJson("POST", `http://${hub.address}:${hub.port || 18080}/offline`, {}, {
+  const scheme = hub.fingerprint ? "https" : "http";
+  const r = await registryHttpJson("POST", `${scheme}://${hub.address}:${hub.port || 18080}/offline`, {}, {
     "X-Node-Token": state.token,
-  }, 5000);
+  }, 5000, hub.fingerprint || "");
   return { ok: r.status === 200 && !!r.json?.ok, status: r.status };
 }
 
@@ -227,6 +231,81 @@ async function httpJson(method, url, body, headers = {}, timeoutMs = 8000) {
   } catch (e) {
     return { status: 0, json: null, text: e.message };
   }
+}
+
+/** 指纹钉扎 HTTPS 请求：自签证书场景跳过 CA 链校验，但在握手完成后、发送任何数据之前校验 SHA-256 指纹 */
+function pinnedRequest({ hostname, port, method = "GET", path: reqPath = "/", headers = {}, body, fingerprint, timeoutMs = 8000 }) {
+  return new Promise((resolve) => {
+    const expected = String(fingerprint || "").replace(/:/g, "").toLowerCase();
+    let done = false;
+    const settle = (v) => { if (!done) { done = true; resolve(v); } };
+    const socket = tls.connect({ host: hostname, port, rejectUnauthorized: false, minVersion: "TLSv1.2" });
+    socket.setTimeout(timeoutMs, () => { socket.destroy(); settle({ status: 0, json: null, text: "timeout" }); });
+    socket.once("error", (e) => settle({ status: 0, json: null, text: e.message }));
+    socket.once("secureConnect", () => {
+      let fp = "";
+      try {
+        const cert = socket.getPeerCertificate(true);
+        if (cert && cert.raw) fp = crypto.createHash("sha256").update(cert.raw).digest("hex");
+      } catch {}
+      if (!fp || fp !== expected) {
+        socket.destroy();
+        settle({ status: 0, json: null, text: "certificate fingerprint mismatch（证书指纹不匹配，可能遭遇中间人）" });
+        return;
+      }
+      const req = http.request(
+        {
+          createConnection: () => socket,
+          hostname, port, method, path: reqPath,
+          headers: { "Content-Type": "application/json", ...headers },
+          timeout: timeoutMs,
+        },
+        (res) => {
+          let buf = "";
+          res.on("data", (c) => (buf += c));
+          res.on("end", () => {
+            let json = null;
+            try { json = JSON.parse(buf); } catch {}
+            settle({ status: res.statusCode, json, text: buf });
+          });
+        }
+      );
+      req.on("timeout", () => { req.destroy(); settle({ status: 0, json: null, text: "timeout" }); });
+      req.on("error", (e) => settle({ status: 0, json: null, text: e.message }));
+      if (body !== undefined) req.write(JSON.stringify(body));
+      req.end();
+    });
+  });
+}
+
+/** registry 请求：配置了指纹走钉扎 HTTPS；否则维持原有 HTTP（未启用 TLS 的旧 Hub 兼容） */
+async function registryHttpJson(method, url, body, headers = {}, timeoutMs = 8000, fingerprint = "") {
+  if (fingerprint && /^https:/i.test(url)) {
+    const u = new URL(url);
+    return pinnedRequest({
+      hostname: u.hostname,
+      port: u.port || 443,
+      method,
+      path: u.pathname + u.search,
+      headers,
+      body,
+      fingerprint,
+      timeoutMs,
+    });
+  }
+  return httpJson(method, url, body, headers, timeoutMs);
+}
+
+/** 凭据文件权限收紧：Linux chmod 600；Windows 关闭继承并仅授权当前用户（best-effort） */
+function hardenFile(p) {
+  try {
+    if (process.platform === "win32") {
+      const user = process.env.USERNAME || "";
+      if (user) exec(`icacls "${p}" /inheritance:r /grant:r "${user}:F"`, { windowsHide: true }, () => {});
+    } else {
+      fs.chmodSync(p, 0o600);
+    }
+  } catch {}
 }
 
 /* ==================== 可移植性：CLI 探测 / 端点解析 ==================== */
@@ -441,14 +520,35 @@ async function getNodeConfig(root) {
   return { cfg, state, agentRunning, agentPid, agentDir: dir, rootFound, renamed, registeredId };
 }
 
+/** 加入密钥兼容「密钥.指纹」组合串：拆分并落盘 hub.fingerprint（指纹须为 64 位 hex） */
+function normalizeJoinFields(cfg) {
+  if (!cfg || typeof cfg !== "object") return cfg;
+  if (typeof cfg.joinKey === "string" && cfg.joinKey.includes(".")) {
+    const [key, fp] = cfg.joinKey.split(".");
+    cfg.joinKey = key;
+    if (fp && /^[a-fA-F0-9]{64}$/.test(fp)) {
+      cfg.hub = { ...(cfg.hub || {}), fingerprint: fp.toLowerCase() };
+    }
+  }
+  return cfg;
+}
+
 function saveNodeConfig(root, cfg) {
   ensureRepoRoot(root);
+  normalizeJoinFields(cfg);
   validateNodeCfg(cfg);
-  writeJson(path.join(agentDir(root), "node.json"), cfg);
+  const nodePath = path.join(agentDir(root), "node.json");
+  writeJson(nodePath, cfg);
+  hardenFile(nodePath);
   // Hub 单点：同步写入控制端配置（如存在），保证两处一致
   const master = getMasterConfig(root);
   if (master && cfg.hub?.address) {
-    master.registry = { ...(master.registry || {}), address: cfg.hub.address, port: cfg.hub.port || 18080 };
+    master.registry = {
+      ...(master.registry || {}),
+      address: cfg.hub.address,
+      port: cfg.hub.port || 18080,
+      ...(cfg.hub.fingerprint ? { fingerprint: cfg.hub.fingerprint } : {}),
+    };
     saveMasterConfig(root, master);
   }
 }
@@ -566,12 +666,21 @@ function getMasterConfig(root) {
 function saveMasterConfig(root, cfg) {
   ensureRepoRoot(root);
   if (!cfg || typeof cfg !== "object") throw new Error("配置为空");
-  writeJson(nodesCfgPath(root), cfg);
+  const masterPath = nodesCfgPath(root);
+  writeJson(masterPath, cfg);
+  hardenFile(masterPath);
   // Hub 单点：同步回写本机节点配置（如存在），保证两处一致
   const nodeCfg = readJson(path.join(agentDir(root), "node.json"));
   if (nodeCfg && cfg.registry?.address) {
-    nodeCfg.hub = { ...(nodeCfg.hub || {}), address: cfg.registry.address, port: cfg.registry.port || 18080 };
-    writeJson(path.join(agentDir(root), "node.json"), nodeCfg);
+    nodeCfg.hub = {
+      ...(nodeCfg.hub || {}),
+      address: cfg.registry.address,
+      port: cfg.registry.port || 18080,
+      ...(cfg.registry.fingerprint ? { fingerprint: cfg.registry.fingerprint } : {}),
+    };
+    const nodePath = path.join(agentDir(root), "node.json");
+    writeJson(nodePath, nodeCfg);
+    hardenFile(nodePath);
   }
 }
 
@@ -586,23 +695,26 @@ function registryRequest(root, reg) {
   const local = localNodeInfo(root);
   const address = (reg && reg.address) || local.hub?.address || "";
   const port = (reg && reg.port) || local.hub?.port || 18080;
+  const fingerprint = (reg && reg.fingerprint) || local.hub?.fingerprint || "";
   const headers = {};
   if (local.token) headers["X-Node-Token"] = local.token;
   if (reg && reg.adminToken) headers["X-Admin-Token"] = reg.adminToken;
-  return { address, port, headers };
+  return { address, port, headers, fingerprint };
 }
 
 async function registryNodes(root, reg) {
   const rq = registryRequest(root, reg);
   if (!rq.address) return null;
-  const r = await httpJson("GET", `http://${rq.address}:${rq.port}/nodes`, undefined, rq.headers);
+  const scheme = rq.fingerprint ? "https" : "http";
+  const r = await registryHttpJson("GET", `${scheme}://${rq.address}:${rq.port}/nodes`, undefined, rq.headers, 5000, rq.fingerprint);
   return r.status === 200 && r.json?.ok ? r.json.nodes : null;
 }
 
 async function registryFrps(root, reg) {
   const rq = registryRequest(root, reg);
   if (!rq.address) return null;
-  const r = await httpJson("GET", `http://${rq.address}:${rq.port}/admin/frps`, undefined, rq.headers);
+  const scheme = rq.fingerprint ? "https" : "http";
+  const r = await registryHttpJson("GET", `${scheme}://${rq.address}:${rq.port}/admin/frps`, undefined, rq.headers, 5000, rq.fingerprint);
   return r.status === 200 && r.json?.ok ? r.json.frps : null;
 }
 
@@ -629,7 +741,12 @@ async function syncMasterNodes(root) {
   }
   const removed = Object.keys(map).filter((k) => !pending.has(k));
   for (const k of removed) delete map[k];
-  cfg.registry = { address: rq.address, port: rq.port, adminToken: cfg.registry?.adminToken || "" };
+  cfg.registry = {
+    address: rq.address,
+    port: rq.port,
+    adminToken: cfg.registry?.adminToken || "",
+    ...(rq.fingerprint ? { fingerprint: rq.fingerprint } : {}),
+  };
   cfg.nodes = map;
   saveMasterConfig(root, cfg);
   const added = [...pending].filter((k) => !prevNames.has(k));
@@ -647,6 +764,39 @@ async function restartLocalOpencode(root) {
   }, 90000);
   if (r.status !== 200 || !r.json) return { ok: false, error: r.text || `HTTP ${r.status}` };
   return { ok: r.json.ok !== false, ...r.json };
+}
+
+/**
+ * 修改本机 opencode 密码（「组网」页齿轮入口）：
+ * 1) 先验证原密码——与 node.json 现值比对（网络共用密码 = 本机节点密码；
+ *    Hub 不存密码/指纹，验证在节点本机完成）
+ * 2) 写入新密码；agent 运行中则经本机回环立即重启 opencode 生效
+ */
+async function changeNodePassword(root, opts = {}) {
+  ensureRepoRoot(root);
+  const file = path.join(agentDir(root), "node.json");
+  const cfg = readJson(file);
+  if (!cfg) return { ok: false, error: "节点尚未配置（请先在向导或「组网」页完成配置）" };
+  const current = cfg.opencode?.password || "";
+  if (!current) return { ok: false, error: "当前未设置 opencode 密码" };
+  const oldPassword = String(opts.oldPassword || "");
+  const newPassword = String(opts.newPassword || "").trim();
+  if (!newPassword) return { ok: false, error: "新密码不能为空" };
+  if (newPassword.length < 8) return { ok: false, error: "新密码过短（至少 8 位）" };
+  if (newPassword === current) return { ok: false, error: "新密码与当前密码相同" };
+  if (oldPassword !== current) return { ok: false, error: "原密码不正确（请输入当前网络共用密码）" };
+
+  cfg.opencode = { ...cfg.opencode, password: newPassword };
+  validateNodeCfg(cfg);
+  writeJson(file, cfg);
+
+  const recorded = readPidFile(root, "agent");
+  if (recorded && isPidAlive(recorded.pid)) {
+    const rr = await restartLocalOpencode(root);
+    if (!rr.ok) return { ok: true, restarted: false, restartError: rr.error || "重启失败" };
+    return { ok: true, restarted: true };
+  }
+  return { ok: true, restarted: false };
 }
 
 /** 清理本地配置中已被吊销（注册表不存在）的节点 */
@@ -825,6 +975,7 @@ ${sections.join("\n\n")}
   const target = path.join(root, "node-ctl", "visitors.toml");
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, toml);
+  hardenFile(target);
     return {
       ok: true,
       target,
@@ -1001,6 +1152,7 @@ function applyMasterImport(root, raw) {
       address: String(data.registry.address),
       port: parseInt(data.registry.port, 10) || 18080,
       adminToken: String(data.registry.adminToken),
+      fingerprint: String(data.registry.fingerprint || cfg.registry?.fingerprint || ""),
     },
     fleetPassword: data.fleetPassword || cfg.fleetPassword || "",
     nodes: mergedNodes,
@@ -1054,6 +1206,9 @@ module.exports = {
   resolveNodeRuntime,
   findRepoRoot,
   registryRequest,
+  registryHttpJson,
+  pinnedRequest,
+  hardenFile,
   restartLocalOpencode,
   buildMasterExport,
   applyMasterImport,
@@ -1073,6 +1228,7 @@ module.exports = {
   findPidByPort,
   getNodeConfig,
   saveNodeConfig,
+  changeNodePassword,
   startAgent,
   stopAgent,
   agentLogTail,

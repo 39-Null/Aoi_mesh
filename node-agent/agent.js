@@ -5,6 +5,9 @@
  * 仅生命周期命令，不做任意命令执行。
  */
 const http = require("http");
+const https = require("https");
+const tls = require("tls");
+const crypto = require("crypto");
 const { spawn, exec } = require("child_process");
 const fs = require("fs");
 const os = require("os");
@@ -37,6 +40,7 @@ function loadConfig() {
     process.exit(1);
   }
   try {
+    try { fs.chmodSync(CONFIG_FILE, 0o600); } catch {}
     return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8").replace(/^\uFEFF/, ""));
   } catch (e) {
     console.error(`配置文件解析失败（${CONFIG_FILE}）：${e.message}`);
@@ -55,11 +59,60 @@ function loadState() {
 function saveState(state) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  try { fs.chmodSync(STATE_FILE, 0o600); } catch {}
 }
 
-function httpJson(method, urlStr, body, headers = {}, timeoutMs = 10000) {
+/** 指纹钉扎 HTTPS 请求：自签证书场景跳过 CA 链校验，但在握手完成后、发送任何数据之前校验 SHA-256 指纹 */
+function pinnedRequest({ hostname, port, method = "GET", path: reqPath = "/", headers = {}, body, fingerprint, timeoutMs = 10000 }) {
   return new Promise((resolve) => {
-    const url = new URL(urlStr);
+    const expected = String(fingerprint || "").replace(/:/g, "").toLowerCase();
+    let done = false;
+    const settle = (v) => { if (!done) { done = true; resolve(v); } };
+    const socket = tls.connect({ host: hostname, port, rejectUnauthorized: false, minVersion: "TLSv1.2" });
+    socket.setTimeout(timeoutMs, () => { socket.destroy(); settle({ status: 0, json: null, text: "timeout" }); });
+    socket.once("error", (e) => settle({ status: 0, json: null, text: e.message }));
+    socket.once("secureConnect", () => {
+      let fp = "";
+      try {
+        const cert = socket.getPeerCertificate(true);
+        if (cert && cert.raw) fp = crypto.createHash("sha256").update(cert.raw).digest("hex");
+      } catch {}
+      if (!fp || fp !== expected) {
+        socket.destroy();
+        settle({ status: 0, json: null, text: "certificate fingerprint mismatch（证书指纹不匹配，可能遭遇中间人）" });
+        return;
+      }
+      const req = http.request(
+        {
+          createConnection: () => socket,
+          hostname, port, method, path: reqPath,
+          headers: { "Content-Type": "application/json", ...headers },
+          timeout: timeoutMs,
+        },
+        (res) => {
+          let buf = "";
+          res.on("data", (c) => (buf += c));
+          res.on("end", () => {
+            let json = null;
+            try { json = JSON.parse(buf); } catch {}
+            settle({ status: res.statusCode, json, text: buf });
+          });
+        }
+      );
+      req.on("timeout", () => { req.destroy(); settle({ status: 0, json: null, text: "timeout" }); });
+      req.on("error", (e) => settle({ status: 0, json: null, text: e.message }));
+      if (body !== undefined) req.write(JSON.stringify(body));
+      req.end();
+    });
+  });
+}
+
+function httpJson(method, urlStr, body, headers = {}, timeoutMs = 10000, fingerprint = "") {
+  const url = new URL(urlStr);
+  if (fingerprint && url.protocol === "https:") {
+    return pinnedRequest({ hostname: url.hostname, port: url.port || 443, method, path: url.pathname + url.search, headers, body, fingerprint, timeoutMs });
+  }
+  return new Promise((resolve) => {
     const req = http.request(
       {
         hostname: url.hostname,
@@ -92,6 +145,14 @@ function httpJson(method, urlStr, body, headers = {}, timeoutMs = 10000) {
     if (body !== undefined) req.write(JSON.stringify(body));
     req.end();
   });
+}
+
+/** 恒时比较（防时序侧信道）：长度不同或空值直接拒绝 */
+function tokenEquals(provided, expected) {
+  const a = Buffer.from(String(provided || ""));
+  const b = Buffer.from(String(expected || ""));
+  if (!b.length || a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }
 
 function execCmd(command, timeoutMs = 15000) {
@@ -176,8 +237,12 @@ class Agent {
   }
 
   get hubBase() {
-    const { address, port } = this.config.hub;
-    return `http://${address}:${port}`;
+    const { address, port, fingerprint } = this.config.hub;
+    return `${fingerprint ? "https" : "http"}://${address}:${port}`;
+  }
+
+  get hubFingerprint() {
+    return this.config.hub?.fingerprint || "";
   }
 
   async register() {
@@ -185,7 +250,7 @@ class Agent {
       name: this.config.name,
       joinKey: this.config.joinKey,
       version: VERSION,
-    });
+    }, {}, 10000, this.hubFingerprint);
     if (res.status === 200 && res.json?.ok) {
       this.state = {
         id: res.json.node.id || res.json.node.name,
@@ -211,7 +276,7 @@ class Agent {
     const res = await httpJson("POST", `${this.hubBase}/rename`, {
       name: this.config.name,
       token: this.state.token,
-    });
+    }, {}, 10000, this.hubFingerprint);
     if (res.status === 200 && res.json?.ok) {
       const old = res.json.renamedFrom || this.state.name || this.config.name;
       this.state = {
@@ -305,6 +370,7 @@ transport.useEncryption = true
 `;
     fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(FRPC_CONFIG, toml);
+    try { fs.chmodSync(FRPC_CONFIG, 0o600); } catch {}
   }
 
   startFrpc() {
@@ -355,7 +421,8 @@ transport.useEncryption = true
     const password = this.config.opencode.password || "";
     const env = { ...process.env };
     if (password) env.OPENCODE_SERVER_PASSWORD = password;
-    const cmd = `opencode serve --port ${port}`;
+    // 显式绑定回环：不依赖上游默认值，杜绝监听 0.0.0.0 的可能
+    const cmd = `opencode serve --hostname 127.0.0.1 --port ${port}`;
     const child = spawn(cmd, { shell: true, windowsHide: true, env, stdio: ["ignore", "pipe", "pipe"] });
     this.opencodeChild = child;
     child.stdout.on("data", (d) => log(`[opencode] ${String(d).trim()}`));
@@ -415,7 +482,7 @@ transport.useEncryption = true
       if (route === "GET /health") {
         return reply(200, { ok: true, name: this.config.name, version: VERSION });
       }
-      if (req.headers["x-agent-token"] !== token) {
+      if (!tokenEquals(req.headers["x-agent-token"], token)) {
         return reply(401, { ok: false, error: "unauthorized" });
       }
       try {
@@ -450,7 +517,9 @@ transport.useEncryption = true
         "POST",
         `${this.hubBase}/heartbeat`,
         { id: this.state.id || this.config.name, name: this.config.name, version: VERSION },
-        { "X-Node-Token": this.state.token }
+        { "X-Node-Token": this.state.token },
+        10000,
+        this.hubFingerprint
       );
       if (res.status === 401) log("心跳被拒绝（可能已被吊销）");
     };

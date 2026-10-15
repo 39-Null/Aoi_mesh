@@ -326,6 +326,7 @@ ipcMain.handle("mesh:node:startFull", () => mesh.startNodeFull(ROOT));
 ipcMain.handle("mesh:node:stop", () => mesh.stopAgent(ROOT));
 ipcMain.handle("mesh:node:log", () => mesh.agentLogTail(ROOT, 150));
 ipcMain.handle("mesh:node:restartOpencode", () => mesh.restartLocalOpencode(ROOT));
+ipcMain.handle("mesh:node:changePassword", (_e, payload) => mesh.changeNodePassword(ROOT, payload || {}));
 ipcMain.handle("mesh:node:reset", () => {
   try {
     return mesh.resetNodeState(ROOT);
