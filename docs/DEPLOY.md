@@ -116,29 +116,79 @@ curl -sk https://127.0.0.1:18080/health                      # HTTPS：返回健
 
 回退：`ENABLE_TLS=0 sudo -E bash scripts/hub/install.sh` 并删除 `registry.env` 中的 TLS 两行后重启；各设备清空 `fingerprint` 字段。
 
-## 3. 生成加入密钥（入网凭据）
+## 3. 获取加入密钥（入网凭据）——按步骤操作
 
-在 Hub 上执行（一次性密钥，一拍一用；默认 72 小时过期，可用 `REGISTRY_JOIN_KEY_TTL_HOURS` 调整）：
+> 加入密钥是"新设备入网"的**一次性**凭据：默认 **72 小时**有效（可由 Hub 的 `REGISTRY_JOIN_KEY_TTL_HOURS` 调整），**一拍一用**。
+> 启用 TLS 的 Hub 返回的是「`密钥.指纹`」组合串（例：`3f2a…9e.f072…4b`），粘贴时**整串使用**即可——节点会自动拆分并把指纹用于证书钉扎，无需额外配置。
 
-```bash
-ADMIN=$(grep '^REGISTRY_ADMIN_TOKEN=' /etc/opencode-mesh/registry.env | cut -d= -f2)
-curl -sk -X POST https://127.0.0.1:18080/admin/keys \
-  -H "X-Admin-Token: $ADMIN" -H 'Content-Type: application/json' \
-  -d '{"count":1}'
-```
+两种获取方式任选其一：
 
-返回 JSON 的 `keys` 数组即为加入密钥，分发给待接入设备。**启用 TLS 时密钥为「密钥.指纹」组合串**（如 `3f2a….c134…`）——节点/控制端整串粘贴即可，会自动拆分并把指纹用于证书钉扎（HTTPS 下自动生效）。
+### 方式 A：在 Hub 服务器上生成（最直接）
 
-平权模型：任一**已入网节点**也可生成新密钥（凭自身节点 token 调同一接口），无需固定管理员；密钥可吊销，注册与吊销均写入审计日志（`REGISTRY_AUDIT_LOG`）。
+1. SSH 登录你的 Hub 服务器：
+   ```bash
+   ssh <你的服务器用户>@<Hub公网IP>
+   ```
+2. 读取管理员密钥（仅在本机使用，勿外发；把输出暂存为 `<ADMIN_TOKEN>`）：
+   ```bash
+   grep '^REGISTRY_ADMIN_TOKEN=' /etc/opencode-mesh/registry.env | cut -d= -f2
+   ```
+3. 生成加入密钥（把 `<ADMIN_TOKEN>` 替换为上一步输出；`curl` 加了 `-k` 以接受自签证书；未启用 TLS 的旧 Hub 把 `https` 换回 `http` 并去掉 `-k`）：
+   ```bash
+   curl -sk -X POST https://127.0.0.1:18080/admin/keys \
+     -H "X-Admin-Token: <ADMIN_TOKEN>" -H 'Content-Type: application/json' \
+     -d '{"count":1}'
+   ```
+4. 从返回 JSON 的 `keys` 数组取出密钥（`count` 可一次生成多个，上限 20，适合批量接入备用）。
+5. 把完整串（含 `.指纹` 后缀）交给待接入设备的操作者；每台设备消耗一个，过期自动失效。
+
+### 方式 B：在任一已入网设备上生成（平权模型）
+
+1. 在该设备上读取**本节点 token**（心跳与管理凭据）：
+   - Windows：打开 `node-agent\data\state.json`，取 `token` 字段
+   - Linux：打开 `node-agent/data/state.json`，取 `token` 字段
+2. 调用 Hub 的同一接口（把 `<HUB>` 换成 Hub 公网地址、`<TOKEN>` 换成上一步的值）：
+   ```bash
+   curl -sk -X POST https://<HUB>:18080/admin/keys \
+     -H "X-Node-Token: <TOKEN>" -H 'Content-Type: application/json' \
+     -d '{"count":1}'
+   ```
+3. 其余同方式 A 的第 4–5 步。
+
+> 平权模型：无固定"管理员"——任一已注册节点都可以生成/吊销；所有签发、注册与吊销操作都写入 Hub 审计日志（`/var/log/opencode-mesh/audit.log`），便于事后追溯。
 
 ## 4. 接入节点
 
-### 4.1 前置检查清单
+### 4.1 先准备三样信息（每一来源都写明）
 
-1. 已安装 opencode（[官方文档](https://opencode.ai/docs/)），命令 `opencode` 可用
-2. 已安装 Node.js 18+
-3. 已拿到：Hub 地址（公网 IP 或域名）、Hub 端口（默认 `18080`）、一次性加入密钥（启用 TLS 时为 `密钥.指纹` 组合串，整串粘贴）
-4. 无需准备 frpc：App 与脚本会自动获取；受限网络可手动下载 [frp releases](https://github.com/fatedier/frp/releases)，把 `frpc`（Windows 为 `frpc.exe`）放入 `node-agent/bin/`
+#### ① Hub 地址（及端口）
+
+Hub 服务器的**公网地址**（IP 或域名），默认端口 `18080`。三个来源任选其一：
+
+1. **部署 Hub 的人**：安装完成时 `install.sh` 会输出地址；或让对方直接告诉你
+2. **Hub 服务器上查看**（SSH 登录后执行）：
+   ```bash
+   grep -E '^REGISTRY_FRPS_ADDR=|^REGISTRY_PORT=' /etc/opencode-mesh/registry.env
+   ```
+   （`REGISTRY_FRPS_ADDR` 即对外可用的地址）
+3. **任一已入网设备**：打开 App →「组网」页 →「Hub 连接」区域，地址与端口即为所求
+
+#### ② 加入密钥
+
+一次性凭据，获取方式见上文 **§3**（两条路径的逐条命令已写明）。启用 TLS 时形如 `密钥.指纹`，**整串粘贴**。
+
+#### ③ 网络统一的 opencode 密码
+
+- **规则**：全网所有节点使用**同一个**密码（≥8 位）。它保护每台设备上的 opencode API——派发任务、读取会话都需通过它认证
+- **全新网络（第一台设备）**：由**你自己设定**一个强密码（向导会要求必填，不再自动生成）
+- **加入既有网络**：向网络管理员（或任一已入网设备的操作者）索取**现有统一密码**并如实填写；填错会导致从控制端派发任务时 401
+- **修改**：任一已入网设备 →「组网」页 →「opencode」行 **⚙ 修改密码**（需先输入原密码验证；多节点网络请逐台同步修改）
+
+#### 其他前置
+
+- 已安装 opencode（[官方文档](https://opencode.ai/docs/)），命令 `opencode` 可用
+- 已安装 Node.js 18+
+- 无需准备 frpc：App 与脚本会自动获取；受限网络可手动下载 [frp releases](https://github.com/fatedier/frp/releases)，把 `frpc`（Windows 为 `frpc.exe`）放入 `node-agent/bin/`
 
 ### 4.2 方式 A：App（图形界面，推荐）
 
@@ -169,11 +219,12 @@ bash scripts/node/join.sh --hub <Hub地址> --key <KEY>
 | `-HubPort` / `--hub-port` | 否 | `18080` | registry 端口 |
 | `-NodeName` / `--name` | 否 | 主机名小写 | 显示名（全网唯一） |
 | `-OpencodePort` / `--oc-port` | 否 | `4096` | 本机 opencode serve 端口 |
+| `-OpencodePassword` / `--oc-password` | 否* | — | **网络统一的 opencode 密码**（≥8 位）。加入既有网络时**必须**与其它设备一致；省略则自动生成随机密码并输出告警（仅适用于全新网络首台设备） |
 | `-AgentPort` / `--agent-port` | 否 | `41999` | agent 受控 API 端口（本机回环） |
 | `-FrpVersion` / `--frp-version` | 否 | 最新版 | 指定 frp 版本（网络受限时固定版本） |
 | `-FrpLocalZip` / `--frp-local-zip` | 否 | — | 本地 frp 压缩包（离线环境） |
 
-脚本会：获取 frpc（如缺）→ 生成随机 opencode 密码 → 写入 `node-agent/node.json` → 后台启动 agent → 输出日志尾部。密码请妥善保存（已写入本地配置，用于控制端编排）。
+脚本会：获取 frpc（如缺）→ 使用 `-OpencodePassword`（未提供则生成随机并告警）→ 写入 `node-agent/node.json` → 后台启动 agent → 输出日志尾部。密码已写入本地配置，用于控制端编排，请妥善保存。
 
 ### 4.4 接入更多节点
 
@@ -253,7 +304,7 @@ node node-ctl/cli.js dispatch <node> "任务内容"   # 按消息协议派发（
 | 字段 | 是什么 | 怎么填 | 示例 / 默认 | 常见错误 |
 | --- | --- | --- | --- | --- |
 | **opencode 端口** | 本机 opencode serve 的监听端口 | 保持默认即可（端口冲突时换 1024–65535 内的空闲端口） | `4096` | 被其他程序占用（换端口或先停止占用程序） |
-| **opencode 密码**（向导：访问密码；日常修改：⚙ 齿轮入口） | 该节点 opencode 的访问密码 | 首次：向导内留空自动生成；修改：点「opencode」行右侧 ⚙ → 输入**原密码**（当前网络共用密码，验证确认）+ 新密码（≥8 位）+ 确认 →「验证并保存」，agent 运行中即刻重启生效 | 强随机字符串 | 原密码不正确 / 新密码过短 / 两次不一致均有提示；验证在节点本机完成（与本地配置现值比对），Hub 不存密码/指纹 |
+| **opencode 密码**（首次向导**必填**；日常修改：⚙ 齿轮入口） | 该节点 opencode 的访问密码；**全网统一**（派发需用同一密码访问所有节点） | 首次：向导中填写（≥8 位；加入既有网络须与其它设备一致，来源见 §4.1 ③）。修改：点「opencode」行右侧 ⚙ → 输入**原密码**（验证确认）+ 新密码（≥8 位）+ 确认 →「验证并保存」，agent 运行中即刻重启生效 | 无默认值（必填） | 原密码不正确 / 新密码过短 / 两次不一致均有提示；验证在节点本机完成；密码以加密形式存储（Windows DPAPI / Linux 密钥环，无密钥环时 600 权限回退） |
 | **agent 端口** | node-agent 受控 API 端口（仅本机回环，经隧道供控制端访问） | 保持默认 | `41999` | 与 opencode 端口或其他服务冲突 |
 | **frpc 路径** | 节点隧道转发程序 | 留空 = 自动在 `node-agent/bin/` 查找（推荐）；也可填绝对路径 | `bin/frpc.exe` | 文件缺失：脚本 / 向导会自动获取，受限网络按 §4.1 手动放置 |
 
@@ -271,6 +322,19 @@ node node-ctl/cli.js dispatch <node> "任务内容"   # 按消息协议派发（
 | 字段 | 是什么 | 怎么填 | 示例 / 默认 | 常见错误 |
 | --- | --- | --- | --- | --- |
 | **Token 轮换（Bot token）** | Telegram Bot 凭据 | 按 §5.4 从 @BotFather 获取；粘贴后「更新并重启」 | `123456:ABC-…` | token 泄露务必 `/revoke` 后轮换 |
+
+### 6.5 端口与默认值（为什么是这些默认值）
+
+| 端口 | 位置 | 默认值 | 默认值的来历 / 理由 | 如何修改 |
+| --- | --- | --- | --- | --- |
+| 注册中心 registry | Hub | `18080` | 高端非常用端口：避开 Web（80/8080）及常见服务；公网入向仅此端口与 frp 控制口，非常用端口降低被扫描命中的概率 | Hub 重跑 `install.sh` 前设置 `REGISTRY_PORT` |
+| frp 控制口 frps | Hub | `17000` | frp 官方默认控制口是 7000，易与其它 frp 实例/既有服务冲突；本项目取 17000（17k 段极少占用） | 同 `FRPS_PORT`（重跑 install.sh） |
+| 主控侧隧道回环口 | 控制端本机 | `14100–19998` 区间内按节点自动分配（每节点 2 个） | ① 仅在控制端 `127.0.0.1` 使用，不占公网；② 区间大（≈5900 个）可支持较多节点；③ 避开常用服务端口段 | Hub：`REGISTRY_PORT_START/END` |
+| opencode serve | 节点 | `4096` | opencode 生态的常用默认端口，保留默认便于跨设备统一与排障 | 向导 /「组网」页「opencode 端口」（冲突时换空闲端口） |
+| node-agent 控制 API | 节点 | `41999` | ① 只绑定 `127.0.0.1`，经 stcp 隧道供控制端按 token 调用，不向公网暴露；② 取 41xxx 高端不常见端口，几乎不与其它软件冲突；③ 与 opencode 端口分离，职责清晰 | 向导 /「组网」页「agent 端口」 |
+| Hub SSH | Hub | `22` | 系统默认；仅运维使用，建议按安全清单加固（禁密码登录/禁 root 直登） | sshd 配置（按需） |
+
+> 端口冲突处理：opencode / agent 端口冲突 → 换一个空闲端口（1024–65535）；Hub 端口冲突 → 改 `REGISTRY_PORT`/`FRPS_PORT` 后重跑 `install.sh`（幂等，数据保留）。
 
 ## 7. App 安装引导
 

@@ -5,9 +5,12 @@
 ## P17 · Windows 便携发行包（2026-10-15）
 
 - [x] `node-app/pack-win.js`（Electron win32-x64 打包）+ `scripts/pack-kit.js` 统一组装（**白名单快照**：只带源码/文档/示例，绝不携带 node.json/nodes.json/visitors.toml/*.local.md/日志等本地运行时与凭据文件）
-- [x] 产物：`opencode-mesh-win-v1.2.0.zip`（含 app/、opencode-mesh/ 运行时快照、内置 frpc.exe、start-app.cmd、README-安装说明、VERSION）+ `SHA256SUMS`；免安装（解压即用，无需环境变量/注册表）
-- [x] 版本统一：App v1.2.0 / agent v0.2.0
-- [ ] GitHub Release 发布（打 tag `v1.2.0` + 上传 zip 与校验和）
+- [x] 产物：`opencode-mesh-win-v1.2.1.zip`（含 app/、opencode-mesh/ 运行时快照、内置 frpc.exe、start-app.cmd、README-安装说明、VERSION）+ `SHA256SUMS`；免安装（解压即用，无需环境变量/注册表）
+- [x] 向导严谨化：密码**必填**（≥8 位，取消静默自动生成）；「组网」页凭据缺失时拦截并引导回向导；字段增加端口说明 tooltip
+- [x] join.ps1 / join.sh 新增 `-OpencodePassword / --oc-password`（加入既有网络须统一；省略时生成随机并告警）
+- [x] 操作文档重构（通用性）：DEPLOY §3 两条密钥获取路径逐条命令、§4.1 三样信息（Hub 地址/密钥/密码）逐步获取、§6.5 端口默认值来历与理由；USAGE 与 kit README 同步
+- [x] 版本统一：App v1.2.1 / agent v0.2.0
+- [ ] GitHub Release 发布（打 tag `v1.2.1` + 上传 zip 与校验和）
 - [ ] CI（GitHub Actions：tag 触发 win/linux 双平台构建）
 - [ ] Linux kit 用 `scripts/pack-kit.js` 重新组装（替换现有手工拼装流程）
 

@@ -2,19 +2,21 @@
 # 用法示例：
 #   powershell -ExecutionPolicy Bypass -File scripts\node\join.ps1 -HubAddress 1.2.3.4 -JoinKey <KEY>
 # 可选参数：
-#   -HubPort 18080          Hub 注册中心端口
-#   -NodeName <显示名>      默认取本机主机名（小写）
-#   -OpencodePort 4096      本机 opencode serve 端口
-#   -AgentPort 41999        node-agent 受控 API 端口（本机回环）
+#   -HubPort 18080                Hub 注册中心端口
+#   -NodeName <显示名>            默认取本机主机名（小写）
+#   -OpencodePort 4096            本机 opencode serve 端口
+#   -OpencodePassword <密码>      网络统一的 opencode 密码（加入既有网络时必须与其它设备一致；省略则自动生成随机密码并告警）
+#   -AgentPort 41999              node-agent 受控 API 端口（本机回环）
 # frpc 获取（二选一，缺省自动取最新版）：
-#   -FrpVersion v0.61.0     指定 frp 版本
-#   -FrpLocalZip <path>     使用本地 frp 压缩包（离线/受限网络）
+#   -FrpVersion v0.61.0           指定 frp 版本
+#   -FrpLocalZip <path>           使用本地 frp 压缩包（离线/受限网络）
 param(
   [Parameter(Mandatory = $true)][string]$HubAddress,
   [int]$HubPort = 18080,
   [Parameter(Mandatory = $true)][string]$JoinKey,
   [string]$NodeName = $env:COMPUTERNAME,
   [int]$OpencodePort = 4096,
+  [string]$OpencodePassword = "",
   [int]$AgentPort = 41999,
   [string]$FrpVersion = "",
   [string]$FrpLocalZip = ""
@@ -69,7 +71,11 @@ function Ensure-Frpc {
 
 Ensure-Frpc
 
-$password = -join ((1..24) | ForEach-Object { [char]((65..90) + (97..122) + (48..57) | Get-Random) })
+$password = $OpencodePassword
+if (-not $password) {
+  $password = -join ((1..24) | ForEach-Object { [char]((65..90) + (97..122) + (48..57) | Get-Random) })
+  Write-Warning "未指定 -OpencodePassword：已自动生成随机密码。若加入既有网络，请改用 -OpencodePassword '<全网统一密码>' 重跑，否则控制端派发将因密码不一致而 401。"
+}
 
 # 兼容「密钥.指纹」组合串（TLS 钉扎）：拆分密钥与 64 位 hex 指纹
 $fp = ""

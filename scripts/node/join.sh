@@ -6,13 +6,14 @@
 #   --hub-port 18080        Hub 注册中心端口
 #   --name <显示名>         默认取本机主机名（小写）
 #   --oc-port 4096          本机 opencode serve 端口
+#   --oc-password <密码>    网络统一的 opencode 密码（加入既有网络时必须与其它设备一致；省略则自动生成并告警）
 #   --agent-port 41999      node-agent 受控 API 端口（本机回环）
 # frpc 获取（二选一，缺省自动取最新版）：
 #   --frp-version v0.61.0   指定 frp 版本
 #   --frp-local-zip <path>  使用本地 frp 压缩包（离线/受限网络）
 set -euo pipefail
 
-HUB=""; HUB_PORT=18080; KEY=""; NAME="$(hostname)"; OC_PORT=4096; AGENT_PORT=41999
+HUB=""; HUB_PORT=18080; KEY=""; NAME="$(hostname)"; OC_PORT=4096; OC_PASSWORD=""; AGENT_PORT=41999
 FRP_VERSION="${FRP_VERSION:-}"; FRP_LOCAL_ZIP="${FRP_LOCAL_ZIP:-}"
 
 while [ $# -gt 0 ]; do
@@ -22,6 +23,7 @@ while [ $# -gt 0 ]; do
     --key) KEY="$2"; shift 2;;
     --name) NAME="$2"; shift 2;;
     --oc-port) OC_PORT="$2"; shift 2;;
+    --oc-password) OC_PASSWORD="$2"; shift 2;;
     --agent-port) AGENT_PORT="$2"; shift 2;;
     --frp-version) FRP_VERSION="$2"; shift 2;;
     --frp-local-zip) FRP_LOCAL_ZIP="$2"; shift 2;;
@@ -84,7 +86,11 @@ ensure_frpc() {
 }
 ensure_frpc || echo "提示：frpc 暂未就绪，agent 启动后补齐 frpc 并重启节点即可建立隧道。"
 
-PASSWORD="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24)"
+PASSWORD="$OC_PASSWORD"
+if [ -z "$PASSWORD" ]; then
+  PASSWORD="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24)"
+  echo "警告：未指定 --oc-password，已自动生成随机密码。若加入既有网络，请用 --oc-password '<全网统一密码>' 重跑，否则控制端派发将因密码不一致而 401。" >&2
+fi
 NAME_LC="$(echo "$NAME" | tr '[:upper:]' '[:lower:]')"
 
 # 兼容「密钥.指纹」组合串（TLS 钉扎）：拆分密钥与 64 位 hex 指纹

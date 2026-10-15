@@ -165,8 +165,8 @@
       <div class="fl"><label>节点名</label><input id="inpNodeName" class="grow" type="text" placeholder="显示名，可随时修改" /></div>
       <div class="fl"><label>注册 id</label><span id="nodeIdChip" class="idchip">…</span></div>
       <div class="fl"><label>加入密钥</label><input id="inpJoinKey" class="grow" type="text" placeholder="一次性密钥（或 密钥.指纹 组合串）" /></div>
-      <div class="fl"><label>opencode</label><input id="inpOcPort" class="short" type="number" placeholder="端口 4096" /><button id="btnPassOpen" class="mini ghost" title="修改 opencode 密码（需验证原网络共用密码）">⚙ 修改密码</button><span id="ocPassHint" class="dim"></span></div>
-      <div class="fl"><label>agent 端口</label><input id="inpAgentPort" class="short" type="number" placeholder="41999" /></div>
+      <div class="fl"><label>opencode</label><input id="inpOcPort" class="short" type="number" placeholder="端口 4096" title="opencode serve 端口（默认 4096，仅本机回环与隧道可达，详见 docs/DEPLOY.md 端口说明）" /><button id="btnPassOpen" class="mini ghost" title="修改 opencode 密码（需验证原网络共用密码）">⚙ 修改密码</button><span id="ocPassHint" class="dim"></span></div>
+      <div class="fl"><label>agent 端口</label><input id="inpAgentPort" class="short" type="number" placeholder="41999" title="node-agent 控制 API 端口（默认 41999，仅绑定 127.0.0.1，经隧道供控制端使用）" /></div>
       <div class="fl"><label>frpc 路径</label><input id="inpFrpc" class="grow" type="text" placeholder="bin/frpc.exe" /></div>
       <div class="btns" style="margin-top:8px; margin-bottom:0;">
         <button id="btnNodeSave" class="mini">保存配置</button>
@@ -249,13 +249,13 @@
   <div id="setupOverlay" class="overlay hidden">
     <div class="setupCard">
       <div class="setupTitle">首次使用 · 快速配置</div>
-      <div class="setupSub">将本机接入 Aoi mesh 网络：填写后点「保存并启动节点」。仅把本机当控制端使用可直接跳过。</div>
+      <div class="setupSub">将本机接入 Aoi mesh 网络。需要三样信息：Hub 地址、一次性加入密钥（启用 TLS 时形如 <b>密钥.指纹</b>）、网络统一的 opencode 密码——获取与设置方式见 kit 内 opencode-mesh/docs/DEPLOY.md「接入节点」。仅把本机当控制端使用可直接跳过。</div>
       <div class="fl"><label>节点名</label><input id="setupName" class="grow" type="text" placeholder="例如 dev-node-2" /></div>
-      <div class="fl"><label>Hub 地址</label><input id="setupHubAddr" class="grow" type="text" placeholder="例如 1.2.3.4" /><input id="setupHubPort" class="short" type="number" placeholder="18080" /></div>
+      <div class="fl"><label>Hub 地址</label><input id="setupHubAddr" class="grow" type="text" placeholder="Hub 公网 IP 或域名，例如 1.2.3.4" /><input id="setupHubPort" class="short" type="number" placeholder="18080" title="Hub 注册中心端口（默认 18080）" /></div>
       <div class="fl"><label>加入密钥</label><input id="setupJoinKey" class="grow" type="text" placeholder="一次性密钥（或 密钥.指纹 组合串）" /></div>
-      <div class="fl"><label>opencode</label><input id="setupOcPort" class="short" type="number" placeholder="4096" /><input id="setupOcPass" class="grow" type="password" placeholder="访问密码（留空自动生成）" /></div>
+      <div class="fl"><label>opencode</label><input id="setupOcPort" class="short" type="number" placeholder="4096" title="opencode serve 端口（默认 4096，仅本机回环与隧道可达）" /><input id="setupOcPass" class="grow" type="password" placeholder="网络统一密码（≥8 位）" /></div>
       <div class="fl"><label>确认密码</label><input id="setupOcPass2" class="grow" type="password" placeholder="再次输入密码" /></div>
-      <div class="fl"><label>agent 端口</label><input id="setupAgentPort" class="short" type="number" placeholder="41999" /></div>
+      <div class="fl"><label>agent 端口</label><input id="setupAgentPort" class="short" type="number" placeholder="41999" title="node-agent 控制 API 端口（默认 41999，仅绑定 127.0.0.1，经隧道供控制端使用）" /></div>
       <div class="btns" style="margin-top:10px;">
         <button id="btnSetupStart" class="mini">保存并启动节点</button>
         <button id="btnSetupSkip" class="mini ghost">仅作为控制端使用</button>
@@ -486,15 +486,21 @@
     if (!hubAddr) { setOp("请填写 Hub 地址", "bad"); return { ok: false }; }
     const joinKey = joinKeyTyped || old.joinKey || "";
     if (!joinKey) { setOp("首次加入需要填写加入密钥", "bad"); return { ok: false }; }
-    // 密码不随此表单修改（走「⚙ 修改密码」弹窗，由 agent 内置校验）；此处仅保留既有凭据，首次配置时自动生成
+    // 密码凭据不属于本表单（由首次向导设置、日后经「⚙ 修改密码」更改）；此处只保留既有凭据，缺失时引导回向导
     const opencode = { port: ocPort, autoStart: true };
     if (old.opencode?.passwordEnc) {
       opencode.passwordEnc = old.opencode.passwordEnc;
     } else if (old.opencode?.password) {
       opencode.password = old.opencode.password;
     } else {
-      opencode.password = Array.from(crypto.getRandomValues(new Uint8Array(18)))
-        .map((b) => b.toString(16).padStart(2, "0")).join("");
+      if (!old.hub?.address) {
+        localStorage.removeItem("mesh_setup");
+        setOp("尚未设置 opencode 密码：正在重新打开「快速配置」向导…", "warn");
+        setTimeout(() => location.reload(), 900);
+      } else {
+        setOp("尚未设置 opencode 密码：请重置身份后通过首次向导完成设置（详见 docs/DEPLOY.md）", "bad");
+      }
+      return { ok: false };
     }
     const cfg = {
       name: nameRaw,
@@ -891,13 +897,10 @@
     if (!/^[a-z0-9_-]{2,32}$/.test(name)) return fail("节点名不合法（2-32 位字母数字下划线中划线）");
     if (!addr) return fail("请填写 Hub 地址");
     if (!key) return fail("请填写加入密钥");
-    if (pass && !pass2) return fail("请再次输入密码");
-    if (pass && pass2 !== pass) return fail("两次输入的密码不一致");
-    let password = pass;
-    if (!password) {
-      password = Array.from(crypto.getRandomValues(new Uint8Array(18)))
-        .map((b) => b.toString(16).padStart(2, "0")).join("");
-    }
+    if (!pass) return fail("请设置 opencode 访问密码（加入既有网络时须与其他设备保持一致）");
+    if (pass.length < 8) return fail("密码过短（至少 8 位）");
+    if (pass2 !== pass) return fail("两次输入的密码不一致");
+    const password = pass;
     const cfg = {
       name,
       hub: { address: addr, port },
