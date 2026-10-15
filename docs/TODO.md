@@ -1,6 +1,20 @@
 # 待办与已知问题（TODO）
 
-> 更新：2026-10-15（安全加固批次 / 密码流程 / 命名统一 / 可移植性）
+> 更新：2026-10-15（凭据加密存储 / 全网密码轮换 / deepin-1 恢复在线）
+
+## P16 · 凭据加密存储与全网密码轮换（2026-10-15）
+
+- [x] 新增 `node-agent/secret-store.js`：seal/unseal（Windows DPAPI 经 PowerShell 零依赖；Linux secret-tool 密钥环；无密钥环时 600 权限 `plain:` 回退并显式告警）
+- [x] agent 启动自动迁移：node.json 明文 `opencode.password` → `passwordEnc`（dev-node-1 实测 `backend=dpapi` 迁移成功，文件无明文）
+- [x] agent 内置改密接口 `POST /opencode/password`（token 鉴权；恒时比较旧密码；加密持久化；内部重启 opencode；解封失败时允许凭据恢复路径）
+- [x] App 不再读取密码值：`changeNodePassword` 改走 agent 接口；`saveNodeConfig/saveMasterConfig` 落盘即封存；导出解封/导入封存；`getNodeConfig` 仅暴露 `hasPassword`
+- [x] node-ctl：dispatch 从加密存储解封密码；新增 `node_dispatch` MCP 工具（信封+回执，替代 fleet 明文 --password 路径）
+- [x] 全网统一密码轮换为 `20181123`（不落文档）：dev-node-1（agent 接口链路）、deepin-1（随更新写入）、nodes.json（密文）、主控 opencode.jsonc（fleet --password）
+- [x] deepin-1 更新与恢复在线：固定 commit `65d55e0` + sha256 校验通过 → 覆盖代码 → 写指纹/密码 → 重启 agent（旧实例带旧密码被新 agent 拒绝接管，重启 opencode 完成切换）→ TLS 心跳恢复"在线"
+- [x] E2E：node-ctl dispatch（加密存储解封 → Basic → 信封 → 回执）全链路到 deepin-1 成功
+- [x] 发现并处置：旧版 App（11:50 启动，早于本次改造）的「保存/同步」会用输入框残留旧密码明文覆盖 nodes.json（15:43 发生一次）→ 已修复为密文 + 记录根因
+- [ ] 用户操作：**重启桌面 App**（加载新版前端；旧版保存会污染配置，重启前勿点保存/同步）；重启主控 opencode（使 fleet 读取新密码与 node_dispatch 生效）
+- [ ] （可选）git 历史中的旧密码 `20060210bai`（已失效）与公开仓库历史：如需彻底清除可做历史重写（breaking，需全设备重新克隆）
 
 ## P14 · 统一安全加固批次（2026-10-15）
 
@@ -18,8 +32,8 @@
 - [x] dev-node-1 切换钉扎：node.json / nodes.json 写入指纹 + agent 重启 → 注册/心跳经钉扎 HTTPS、visitor 数据面握手（open/agent 均 200）、node-ctl list 正常、审计零 auth_fail
 - [x] install.sh 修复：`enable --now` 不会重启运行中的服务（升级场景失效）→ 改为显式 `systemctl restart`
 - [x] 公网暴露核对：firewalld 未启用；外部探测仅 17000/18080 可达，14100+ 段全部丢包（安全组已阻断）
-- [ ] deepin-1 上线后更新：`git pull` + 组网页粘贴 `旧密钥.指纹`（或写 node.json hub.fingerprint）+ 重启节点（旧代码不支持 TLS，未更新将无法注册上线）
-- [ ] 重启桌面 App 加载新版前端（齿轮改密、组合密钥提示）
+- [x] deepin-1 更新并恢复在线（2026-10-15，见 P16：固定 commit + 哈希校验 → 覆盖代码 → 指纹/密码 → 重启；心跳恢复"在线"）
+- [ ] 重启桌面 App 加载新版前端（齿轮改密、组合密钥、加密存储保留逻辑）与主控 opencode（fleet 新密码）
 - [ ] （缓做）frps 控制口 TLS；SSH 一次性加固核对清单
 
 ## P13 · 密码修改流程重构（2026-10-15）
@@ -136,7 +150,7 @@
 
 - [x] deepin-1 加入网络（注册表:在线、隧道:可达）
 - [x] 远程生命周期：本机远程停止/启动 deepin-1 的 opencode ✓
-- [x] 统一密码 `20060210bai` 对齐（修复保存竞态 + agent 配置热重载后两端生效）
+- [x] 统一密码对齐（修复保存竞态 + agent 配置热重载后两端生效；真实密码不落文档）
 - [x] 任务派发与回收：向 deepin-1 派发 `uname -a`，3.5s 回收真实输出（bzw-PC / Deepin 内核信息）✓
 - [x] fleet 编排集成：主控 4096 写入 fleet + NodeCtl MCP 配置；`fleet_list_nodes` 双节点在线（173/227ms）、`fleet_node_health` 正常 ✓
 - [ ] （建议）手机 Telegram 实测："让 deepin-1 执行 xxx 并汇报"
