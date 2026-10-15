@@ -10,7 +10,7 @@
 - [x] 本机实机切换完成：fleet 明文条目已移除（备份 `opencode.jsonc.mesh-bak-2026-10-15T11-03-19`）
 - [x] 单测 16 项全过（保注释/迁移清理/幂等/漂移检测修复/移除/状态机）
 - [ ] **重启 opencode 验证**：fleet_* 工具移除、node_* 13 工具可用、node_dispatch 派发成功
-- [ ] kit v1.3.0 重新打包（含 jsonc-parser 依赖打包修正与 MCP 卡片）
+- [x] kit v1.3.0 重新打包（含 jsonc-parser 依赖打包修正与 MCP 卡片；桌面 zip 已更新，sha256 `957f4550…61db`）
 - [ ] （后置）ELECTRON_RUN_AS_NODE：纯控制端免系统 Node 依赖
 - [ ] （后置）DEPLOY 补充"合并链覆盖（项目级/托管配置）"的排查指引
 
