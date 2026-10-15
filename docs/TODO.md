@@ -9,7 +9,7 @@
 - [x] 默认仅写 node-ctl，**自动移除 fleet 明文条目**；「保留 fleet 写入」为高级选项（fleet 剔除论证见 DEPLOY §5.5）
 - [x] 本机实机切换完成：fleet 明文条目已移除（备份 `opencode.jsonc.mesh-bak-2026-10-15T11-03-19`）
 - [x] 单测 16 项全过（保注释/迁移清理/幂等/漂移检测修复/移除/状态机）
-- [ ] **重启 opencode 验证**：fleet_* 工具移除、node_* 13 工具可用、node_dispatch 派发成功
+- [x] **重启 opencode 验证完成**（2026-10-15 本机重启后实测）：工具集仅剩 `node-*` 13 个（fleet_* 已退出）；`node_health` 双节点健康 v1.19.0；`node_dispatch` → dev-node-1 `done`（回执 "mesh-e2e-ok"）；`node_list` 正常（含新注册设备 desktop-1，当前离线）
 - [x] kit v1.3.0 重新打包（含 jsonc-parser 依赖打包修正与 MCP 卡片；桌面 zip 已更新，sha256 `957f4550…61db`）
 - [ ] （后置）ELECTRON_RUN_AS_NODE：纯控制端免系统 Node 依赖
 - [ ] （后置）DEPLOY 补充"合并链覆盖（项目级/托管配置）"的排查指引
@@ -21,8 +21,9 @@
 - [x] 向导严谨化：密码**必填**（≥8 位，取消静默自动生成）；「组网」页凭据缺失时拦截并引导回向导；字段增加端口说明 tooltip
 - [x] join.ps1 / join.sh 新增 `-OpencodePassword / --oc-password`（加入既有网络须统一；省略时生成随机并告警）
 - [x] 操作文档重构（通用性）：DEPLOY §3 两条密钥获取路径逐条命令、§4.1 三样信息（Hub 地址/密钥/密码）逐步获取、§6.5 端口默认值来历与理由；USAGE 与 kit README 同步
-- [x] 版本统一：App v1.2.1 / agent v0.2.0
-- [ ] GitHub Release 发布（打 tag `v1.2.1` + 上传 zip 与校验和）
+- [x] 版本统一：App v1.3.0 / agent v0.2.0（agent 版本号随下次重启生效）
+- [x] 打 tag `v1.3.0` 并推送（2026-10-15）
+- [ ] GitHub Release 发布（web 端）：附件上传桌面 `opencode-mesh-win-v1.3.0.zip` 与 `SHA256SUMS`
 - [ ] CI（GitHub Actions：tag 触发 win/linux 双平台构建）
 - [ ] Linux kit 用 `scripts/pack-kit.js` 重新组装（替换现有手工拼装流程）
 
