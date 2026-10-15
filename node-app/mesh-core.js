@@ -308,6 +308,42 @@ function hardenFile(p) {
   } catch {}
 }
 
+/** 凭据加解密（懒加载 node-agent/secret-store.js；不可用时降级为原文透传） */
+let _secretStore = null;
+function secretStore(root) {
+  if (_secretStore) return _secretStore;
+  const candidates = [
+    path.join(root || findRepoRoot(), "node-agent", "secret-store.js"),
+    path.join(__dirname, "..", "node-agent", "secret-store.js"),
+  ];
+  for (const p of candidates) {
+    try {
+      _secretStore = require(p);
+      return _secretStore;
+    } catch {}
+  }
+  _secretStore = {
+    seal: (s) => s,
+    unseal: (s) => s,
+    isSealed: () => false,
+    backendName: () => "plain",
+    PLAIN_PREFIX: "plain:",
+  };
+  return _secretStore;
+}
+
+/** 保存节点配置前封存敏感字段：明文密码 → passwordEnc（落盘无明文） */
+function sealNodeSecrets(root, cfg) {
+  const store = secretStore(root);
+  const oc = cfg.opencode || {};
+  if (oc.password) {
+    oc.passwordEnc = store.isSealed(oc.password) ? oc.password : store.seal(oc.password);
+  }
+  delete oc.password;
+  cfg.opencode = oc;
+  return cfg;
+}
+
 /* ==================== 可移植性：CLI 探测 / 端点解析 ==================== */
 
 let cachedCli = null;
@@ -517,7 +553,8 @@ async function getNodeConfig(root) {
       if (v?.agentToken === state.token) { registeredId = k; break; }
     }
   }
-  return { cfg, state, agentRunning, agentPid, agentDir: dir, rootFound, renamed, registeredId };
+  const hasPassword = !!(cfg?.opencode?.passwordEnc || cfg?.opencode?.password);
+  return { cfg, state, agentRunning, agentPid, agentDir: dir, rootFound, renamed, registeredId, hasPassword };
 }
 
 /** 加入密钥兼容「密钥.指纹」组合串：拆分并落盘 hub.fingerprint（指纹须为 64 位 hex） */
@@ -536,6 +573,7 @@ function normalizeJoinFields(cfg) {
 function saveNodeConfig(root, cfg) {
   ensureRepoRoot(root);
   normalizeJoinFields(cfg);
+  sealNodeSecrets(root, cfg);
   validateNodeCfg(cfg);
   const nodePath = path.join(agentDir(root), "node.json");
   writeJson(nodePath, cfg);
@@ -666,6 +704,15 @@ function getMasterConfig(root) {
 function saveMasterConfig(root, cfg) {
   ensureRepoRoot(root);
   if (!cfg || typeof cfg !== "object") throw new Error("配置为空");
+  // 封存共享密码：明文 → fleetPasswordEnc（落盘无明文；未输入新值时保留既有密文）
+  if (cfg.fleetPassword) {
+    const store = secretStore(root);
+    cfg.fleetPasswordEnc = store.isSealed(cfg.fleetPassword)
+      ? cfg.fleetPassword
+      : store.seal(cfg.fleetPassword, { keyId: "master-fleet-password" });
+  }
+  if (!cfg.fleetPasswordEnc) cfg.fleetPasswordEnc = "";
+  delete cfg.fleetPassword;
   const masterPath = nodesCfgPath(root);
   writeJson(masterPath, cfg);
   hardenFile(masterPath);
@@ -767,36 +814,30 @@ async function restartLocalOpencode(root) {
 }
 
 /**
- * 修改本机 opencode 密码（「组网」页齿轮入口）：
- * 1) 先验证原密码——与 node.json 现值比对（网络共用密码 = 本机节点密码；
- *    Hub 不存密码/指纹，验证在节点本机完成）
- * 2) 写入新密码；agent 运行中则经本机回环立即重启 opencode 生效
+ * 修改本机 opencode 密码（「组网」页齿轮入口）。
+ * 验证与持久化均由 node-agent 内置完成（App 不读取密码值）：
+ * agent 校验旧密码 → 加密存储（DPAPI/密钥环）→ 重启 opencode 生效。
  */
 async function changeNodePassword(root, opts = {}) {
   ensureRepoRoot(root);
-  const file = path.join(agentDir(root), "node.json");
-  const cfg = readJson(file);
+  const cfg = readJson(path.join(agentDir(root), "node.json"));
+  const state = readJson(path.join(agentDir(root), "data", "state.json"));
   if (!cfg) return { ok: false, error: "节点尚未配置（请先在向导或「组网」页完成配置）" };
-  const current = cfg.opencode?.password || "";
-  if (!current) return { ok: false, error: "当前未设置 opencode 密码" };
+  if (!state?.token) return { ok: false, error: "agent 尚未注册（请先启动节点）" };
+  const recorded = readPidFile(root, "agent");
+  if (!recorded || !isPidAlive(recorded.pid)) return { ok: false, error: "agent 未运行（请先启动节点）" };
   const oldPassword = String(opts.oldPassword || "");
   const newPassword = String(opts.newPassword || "").trim();
   if (!newPassword) return { ok: false, error: "新密码不能为空" };
   if (newPassword.length < 8) return { ok: false, error: "新密码过短（至少 8 位）" };
-  if (newPassword === current) return { ok: false, error: "新密码与当前密码相同" };
-  if (oldPassword !== current) return { ok: false, error: "原密码不正确（请输入当前网络共用密码）" };
-
-  cfg.opencode = { ...cfg.opencode, password: newPassword };
-  validateNodeCfg(cfg);
-  writeJson(file, cfg);
-
-  const recorded = readPidFile(root, "agent");
-  if (recorded && isPidAlive(recorded.pid)) {
-    const rr = await restartLocalOpencode(root);
-    if (!rr.ok) return { ok: true, restarted: false, restartError: rr.error || "重启失败" };
-    return { ok: true, restarted: true };
-  }
-  return { ok: true, restarted: false };
+  const port = cfg.agent?.port || 41999;
+  const r = await httpJson("POST", `http://127.0.0.1:${port}/opencode/password`, { oldPassword, newPassword }, {
+    "X-Agent-Token": state.token,
+  }, 120000);
+  if (r.status === 404) return { ok: false, error: "节点 agent 版本过旧（无内置密码接口），请更新节点后重试" };
+  if (!r.json) return { ok: false, error: r.text || `HTTP ${r.status}` };
+  if (r.status !== 200 || !r.json.ok) return { ok: false, error: r.json.error || "修改失败" };
+  return { ok: true, restarted: !!r.json.restarted, running: !!r.json.running, recovered: !!r.json.recovered };
 }
 
 /** 清理本地配置中已被吊销（注册表不存在）的节点 */
@@ -1115,13 +1156,19 @@ function buildMasterExport(root) {
   if (!cfg?.registry?.address || !cfg.registry.adminToken) {
     throw new Error("主控配置不完整（缺少 Hub 地址或管理密钥），无法导出");
   }
+  let fleetPassword = "";
+  try {
+    fleetPassword = cfg.fleetPasswordEnc ? secretStore(root).unseal(cfg.fleetPasswordEnc) : (cfg.fleetPassword || "");
+  } catch (e) {
+    throw new Error("共享密码解密失败（" + (e.message || e) + "），无法导出");
+  }
   return {
     app: "opencode-mesh",
     kind: "master-config",
     version: 1,
     exportedAt: new Date().toISOString(),
     registry: cfg.registry,
-    fleetPassword: cfg.fleetPassword || "",
+    fleetPassword,
     nodes: cfg.nodes || {},
   };
 }
@@ -1147,6 +1194,11 @@ function applyMasterImport(root, raw) {
   for (const [k, v] of Object.entries(mergedNodes)) {
     if (v && typeof v === "object" && !v.name) v.name = k;
   }
+  let fleetPasswordEnc = cfg.fleetPasswordEnc || "";
+  if (data.fleetPassword) {
+    // 导入的明文共享密码 → 立即封存（密钥环不可用时回退 plain:，仍受 600 权限保护）
+    fleetPasswordEnc = secretStore(root).seal(String(data.fleetPassword), { keyId: "master-fleet-password" });
+  }
   const merged = {
     registry: {
       address: String(data.registry.address),
@@ -1154,14 +1206,14 @@ function applyMasterImport(root, raw) {
       adminToken: String(data.registry.adminToken),
       fingerprint: String(data.registry.fingerprint || cfg.registry?.fingerprint || ""),
     },
-    fleetPassword: data.fleetPassword || cfg.fleetPassword || "",
+    fleetPasswordEnc,
     nodes: mergedNodes,
   };
   saveMasterConfig(root, merged);
   return {
     ok: true,
     registry: merged.registry,
-    fleetPassword: !!merged.fleetPassword,
+    fleetPassword: !!merged.fleetPasswordEnc,
     nodes: Object.keys(merged.nodes).length,
   };
 }
@@ -1181,10 +1233,20 @@ async function fleetSnippet(root) {
     return null;
   });
   if (nodeArgs.includes(null)) return { ok: false, error: "无法确定部分节点地址（配置 registry 或 opencodeUrl）" };
-  let password = cfg.fleetPassword || "";
+  let password = "";
+  try {
+    password = cfg.fleetPasswordEnc ? secretStore(root).unseal(cfg.fleetPasswordEnc) : (cfg.fleetPassword || "");
+  } catch (e) {
+    return { ok: false, error: "共享密码解密失败：" + (e.message || e) };
+  }
   if (!password) {
     const nodeCfg = readJson(path.join(agentDir(root), "node.json"));
-    password = nodeCfg?.opencode?.password || "";
+    const oc = nodeCfg?.opencode || {};
+    try {
+      password = oc.passwordEnc ? secretStore(root).unseal(oc.passwordEnc) : (oc.password || "");
+    } catch {
+      password = "";
+    }
   }
   if (!password) {
     return { ok: false, error: "未设置共享 opencode 密码：请在「主控」页填写，或在「组网」页配置本机节点密码" };

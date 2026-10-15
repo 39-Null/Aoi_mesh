@@ -435,8 +435,7 @@
     $("inpAgentPort").value = cfg.agent?.port || 41999;
     const passHint = $("ocPassHint");
     if (passHint) {
-      const len = (cfg.opencode?.password || "").length;
-      passHint.textContent = len ? `已设置（${len} 位）` : "未设置（保存时自动生成）";
+      passHint.textContent = r.hasPassword ? "密码已设置（加密存储）" : "未设置（保存时自动生成）";
     }
     $("inpFrpc").value = cfg.frpc?.binary || "bin/frpc.exe";
     const m = (await ipcRenderer.invoke("mesh:master:get")) || {};
@@ -487,17 +486,21 @@
     if (!hubAddr) { setOp("请填写 Hub 地址", "bad"); return { ok: false }; }
     const joinKey = joinKeyTyped || old.joinKey || "";
     if (!joinKey) { setOp("首次加入需要填写加入密钥", "bad"); return { ok: false }; }
-    // 密码不随此表单修改（走「⚙ 修改密码」弹窗 + 原密码验证）；此处仅沿用现值，首次配置时自动生成
-    let password = old.opencode?.password || "";
-    if (!password) {
-      password = Array.from(crypto.getRandomValues(new Uint8Array(18)))
+    // 密码不随此表单修改（走「⚙ 修改密码」弹窗，由 agent 内置校验）；此处仅保留既有凭据，首次配置时自动生成
+    const opencode = { port: ocPort, autoStart: true };
+    if (old.opencode?.passwordEnc) {
+      opencode.passwordEnc = old.opencode.passwordEnc;
+    } else if (old.opencode?.password) {
+      opencode.password = old.opencode.password;
+    } else {
+      opencode.password = Array.from(crypto.getRandomValues(new Uint8Array(18)))
         .map((b) => b.toString(16).padStart(2, "0")).join("");
     }
     const cfg = {
       name: nameRaw,
       hub: { address: hubAddr, port: hubPort },
       joinKey,
-      opencode: { port: ocPort, password, autoStart: true },
+      opencode,
       agent: { port: agentPort },
       frpc: { binary: frpcBin },
     };
@@ -617,7 +620,8 @@
         adminToken: $("inpRegToken").value.trim() || old.registry?.adminToken || "",
         fingerprint: old.registry?.fingerprint || "",
       },
-      fleetPassword: $("inpFleetPass").value.trim() || old.fleetPassword || "",
+      fleetPassword: $("inpFleetPass").value.trim(),
+      fleetPasswordEnc: old.fleetPasswordEnc || "",
       nodes: old.nodes || {},
     };
     const saveRes = await ipcRenderer.invoke("mesh:master:save", cfg);

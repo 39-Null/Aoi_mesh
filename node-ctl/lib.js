@@ -181,6 +181,34 @@ async function agentHealth(nodeCfg) {
   }
 }
 
+/* ==================== 共享密码解析（加密存储解封） ==================== */
+
+let _secretStore = null;
+function loadSecretStore() {
+  if (_secretStore !== null) return _secretStore;
+  try {
+    _secretStore = require(path.join(repoRoot(), "node-agent", "secret-store.js"));
+  } catch {
+    _secretStore = false;
+  }
+  return _secretStore;
+}
+
+/** 解析共享密码：fleetPasswordEnc（DPAPI/密钥环）→ 解封；兼容旧明文字段 fleetPassword */
+function resolveFleetPassword(config) {
+  if (!config) return "";
+  if (config.fleetPasswordEnc) {
+    const store = loadSecretStore();
+    if (!store) throw new Error("无法解封共享密码：缺少 node-agent/secret-store.js（请更新仓库）");
+    try {
+      return store.unseal(config.fleetPasswordEnc);
+    } catch (e) {
+      throw new Error("共享密码解密失败：" + (e.message || e) + "（换机/换用户后请重新设置共享密码）");
+    }
+  }
+  return config.fleetPassword || "";
+}
+
 /* ==================== opencode-mesh 协议 v1（信封 / 回执 / 派发） ==================== */
 
 function saveConfigFile(filePath, cfg) {
@@ -261,8 +289,8 @@ async function dispatchToNode(configPath, config, nodeName, body, opts = {}) {
   if (!hit?.node?.opencodeUrl) throw new Error(`节点 "${nodeName}" 缺少 opencodeUrl（先在 App「主控」页同步节点）`);
   const nodeKey = hit.key;
   const node = hit.node;
-  const nodeCfg = { ...node, opencodePassword: config.fleetPassword || "" };
-  if (!nodeCfg.opencodePassword) throw new Error("缺少统一密码（config.fleetPassword）");
+  const nodeCfg = { ...node, opencodePassword: resolveFleetPassword(config) };
+  if (!nodeCfg.opencodePassword) throw new Error("缺少统一密码（共享密码未设置，请在 App「主控」页设置）");
 
   const from = opts.from || "master";
   const task = opts.task || newTaskId("t");
@@ -325,6 +353,7 @@ module.exports = {
   registryAuth,
   registryFetch,
   pinnedRequest,
+  resolveFleetPassword,
   saveConfigFile,
   newTaskId,
   wrapEnvelope,

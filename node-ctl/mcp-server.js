@@ -3,7 +3,7 @@
  * opencode-mesh node-ctl MCP server（stdio, 零依赖）
  * 让主控 opencode 原生拥有“列出节点 / 远程启停节点 opencode”的能力。
  */
-const { loadConfig, getNode, agentCall, agentHealth, registryNodes } = require("./lib");
+const { loadConfig, getNode, agentCall, agentHealth, registryNodes, dispatchToNode } = require("./lib");
 
 const SERVER_INFO = { name: "opencode-mesh-node-ctl", version: "0.1.0" };
 const PROTOCOL_VERSION = "2024-11-05";
@@ -37,6 +37,22 @@ const TOOLS = [
     name: "node_opencode_restart",
     description: "远程重启某个节点上的 opencode 服务器。",
     inputSchema: { type: "object", properties: { ...NODE_PROP }, required: ["node"] },
+  },
+  {
+    name: "node_dispatch",
+    description:
+      "向指定节点派发任务（opencode-mesh 信封 + 回执解析，自动复用会话；共享密码经加密存储解封后使用，不走 fleet 的明文 --password）。" +
+      "返回：task id、状态（done/partial/failed）、摘要与产物路径。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...NODE_PROP,
+        task: { type: "string", description: "任务正文（自然语言）" },
+        mode: { type: "string", enum: ["one-shot", "session"], description: "one-shot=执行完即止（默认）；session=允许继续多轮" },
+        newSession: { type: "boolean", description: "true=强制开启新会话（默认复用）" },
+      },
+      required: ["node", "task"],
+    },
   },
 ];
 
@@ -92,6 +108,17 @@ async function callTool(name, args) {
       return await toolLifecycle(args.node, "stop");
     case "node_opencode_restart":
       return await toolLifecycle(args.node, "restart");
+    case "node_dispatch": {
+      const { path: cfgPath, config } = loadConfig();
+      const res = await dispatchToNode(cfgPath, config, args.node, String(args.task || ""), {
+        newSession: !!args.newSession,
+        mode: args.mode || "one-shot",
+        timeoutSec: 300,
+      });
+      const lines = [`任务 ${res.task} → ${args.node}［${res.status}］`, `摘要：${res.summary || "(空)"}`];
+      if (res.artifacts) lines.push(`产物：${res.artifacts}`);
+      return lines.join("\n");
+    }
     default:
       throw new Error(`未知工具：${name}`);
   }

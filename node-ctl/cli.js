@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const fs = require("fs");
 const path = require("path");
-const { loadConfig, getNode, resolveNodeEntry, agentCall, agentHealth, registryNodes, registryFrps, dispatchToNode } = require("./lib");
+const { loadConfig, getNode, resolveNodeEntry, agentCall, agentHealth, registryNodes, registryFrps, resolveFleetPassword, dispatchToNode } = require("./lib");
 
 const USAGE = `opencode-mesh node-ctl
 
@@ -114,7 +114,11 @@ async function cmdFleetConfig(config) {
     process.exitCode = 1;
     return;
   }
-  const password = config.fleetPassword || "REPLACE_WITH_SHARED_OPENCODE_PASSWORD";
+  let password = "";
+  try {
+    password = resolveFleetPassword(config);
+  } catch {}
+  if (!password) password = "REPLACE_WITH_SHARED_OPENCODE_PASSWORD";
   console.log(`将下面片段合并进主控 opencode.jsonc 的 "mcp" 字段（URL 为主控本机 visitor 推荐地址，需先启动 visitor）：
 
     "fleet": {

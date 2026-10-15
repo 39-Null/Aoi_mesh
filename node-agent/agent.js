@@ -12,6 +12,7 @@ const { spawn, exec } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const secretStore = require("./secret-store");
 
 const ROOT = __dirname;
 const CONFIG_FILE = process.env.AGENT_CONFIG || path.join(ROOT, "node.json");
@@ -33,6 +34,26 @@ function log(...args) {
   } catch {}
 }
 
+/** 读取并解析配置文件（不解密） */
+function loadRawConfig() {
+  return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8").replace(/^\uFEFF/, ""));
+}
+
+/** 解析 opencode 密码：优先 passwordEnc（加密存储）→ 解封到内存；解封失败标记 _pwError（拒绝自动启动 opencode） */
+function resolveOpencodeSecrets(cfg) {
+  if (!cfg || !cfg.opencode) return cfg;
+  if (cfg.opencode.passwordEnc) {
+    try {
+      cfg.opencode.password = secretStore.unseal(cfg.opencode.passwordEnc);
+      delete cfg.opencode._pwError;
+    } catch (e) {
+      cfg.opencode.password = "";
+      cfg.opencode._pwError = `凭据解密失败（${e.message || e}）`;
+    }
+  }
+  return cfg;
+}
+
 function loadConfig() {
   if (!fs.existsSync(CONFIG_FILE)) {
     console.error(`缺少配置文件：${CONFIG_FILE}`);
@@ -41,7 +62,7 @@ function loadConfig() {
   }
   try {
     try { fs.chmodSync(CONFIG_FILE, 0o600); } catch {}
-    return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8").replace(/^\uFEFF/, ""));
+    return resolveOpencodeSecrets(loadRawConfig());
   } catch (e) {
     console.error(`配置文件解析失败（${CONFIG_FILE}）：${e.message}`);
     process.exit(1);
@@ -153,6 +174,25 @@ function tokenEquals(provided, expected) {
   const b = Buffer.from(String(expected || ""));
   if (!b.length || a.length !== b.length) return false;
   return crypto.timingSafeEqual(a, b);
+}
+
+/** 读取请求体（JSON，1MB 上限） */
+function readBody(req) {
+  return new Promise((resolve) => {
+    let buf = "";
+    req.on("data", (c) => {
+      buf += c;
+      if (buf.length > 1_000_000) req.destroy();
+    });
+    req.on("end", () => {
+      if (!buf) return resolve({});
+      try {
+        resolve(JSON.parse(buf));
+      } catch {
+        resolve(null);
+      }
+    });
+  });
 }
 
 function execCmd(command, timeoutMs = 15000) {
@@ -406,9 +446,74 @@ transport.useEncryption = true
     }
   }
 
+  /** 启动时把 node.json 中的明文密码迁移为加密存储（一次性；幂等） */
+  migrateSecretsToSealed() {
+    try {
+      const raw = loadRawConfig();
+      const oc = raw.opencode || {};
+      if (oc.passwordEnc) return;
+      if (!oc.password) return;
+      const plain = String(oc.password);
+      oc.passwordEnc = secretStore.isSealed(plain) ? plain : secretStore.seal(plain);
+      delete oc.password;
+      raw.opencode = oc;
+      fs.writeFileSync(CONFIG_FILE, JSON.stringify(raw, null, 2));
+      try { fs.chmodSync(CONFIG_FILE, 0o600); } catch {}
+      this.config.opencode.passwordEnc = oc.passwordEnc;
+      if (oc.passwordEnc.startsWith(secretStore.PLAIN_PREFIX)) {
+        log(`凭据已迁移：当前系统无可用密钥环，使用受限文件回退（plain，600 权限）`);
+      } else {
+        log(`凭据已加密存储（backend=${secretStore.backendName()}）`);
+      }
+    } catch (e) {
+      log("凭据加密迁移失败（保留明文原状）：" + (e.message || e));
+    }
+  }
+
+  /** 把新密码加密写回 node.json（保留其余字段） */
+  persistSealedPassword(newPassword) {
+    const raw = loadRawConfig();
+    raw.opencode = raw.opencode || {};
+    raw.opencode.passwordEnc = secretStore.seal(newPassword);
+    delete raw.opencode.password;
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(raw, null, 2));
+    try { fs.chmodSync(CONFIG_FILE, 0o600); } catch {}
+    this.config.opencode.passwordEnc = raw.opencode.passwordEnc;
+  }
+
+  /** 修改本机 opencode 密码：agent 内部校验旧密码 → 加密持久化 → 重启 opencode */
+  async changeOpencodePassword(oldPassword, newPassword) {
+    const cur = this.config.opencode.password || "";
+    const locked = !!this.config.opencode._pwError;
+    if (newPassword.length < 8) return { ok: false, code: 400, error: "新密码过短（至少 8 位）" };
+    if (newPassword === cur && cur) return { ok: false, code: 400, error: "新密码与当前密码相同" };
+    if (cur) {
+      if (!tokenEquals(oldPassword, cur)) {
+        return { ok: false, code: 403, error: "原密码不正确（请输入当前网络共用密码）" };
+      }
+    } else if (!locked) {
+      return { ok: false, code: 409, error: "当前未设置密码" };
+    }
+    // locked=true 且密码不可解：agent token 已鉴权通过，允许直接重置（恢复路径）
+    try {
+      this.persistSealedPassword(newPassword);
+    } catch (e) {
+      return { ok: false, code: 500, error: "凭据保存失败：" + (e.message || e) };
+    }
+    this.config.opencode.password = newPassword;
+    delete this.config.opencode._pwError;
+    await this.stopOpencode();
+    const ok = await this.startOpencode();
+    return { ok: true, restarted: true, running: ok, recovered: locked };
+  }
+
   async startOpencode() {
     this.reloadRuntimeConfig();
     const port = this.config.opencode.port;
+    if (this.config.opencode._pwError && !this.config.opencode.password) {
+      log(`拒绝启动 opencode：${this.config.opencode._pwError}（请在 App「组网」页重置密码）`);
+      return false;
+    }
     if (await opencodeHealthy(port, this.config.opencode.password)) {
       log("opencode 已在运行，跳过启动");
       return true;
@@ -502,6 +607,12 @@ transport.useEncryption = true
           const ok = await this.startOpencode();
           return reply(200, { ok, ...(await this.statusOpencode()) });
         }
+        if (route === "POST /opencode/password") {
+          const body = await readBody(req);
+          if (body === null) return reply(400, { ok: false, error: "bad json" });
+          const r = await this.changeOpencodePassword(String(body.oldPassword || ""), String(body.newPassword || ""));
+          return reply(r.code || (r.ok ? 200 : 400), r);
+        }
         return reply(404, { ok: false, error: "not found" });
       } catch (e) {
         return reply(500, { ok: false, error: e.message });
@@ -533,6 +644,7 @@ transport.useEncryption = true
       fs.mkdirSync(DATA_DIR, { recursive: true });
       fs.writeFileSync(path.join(DATA_DIR, "agent.pid"), JSON.stringify({ pid: process.pid, startedAt: Date.now(), marker: __filename }));
     } catch {}
+    this.migrateSecretsToSealed();
     if (!(await this.ensureRegistered())) return;
     this.writeFrpcConfig();
     this.startFrpc();
