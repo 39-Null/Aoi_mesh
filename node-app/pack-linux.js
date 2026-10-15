@@ -24,10 +24,11 @@ const fs = require("fs");
     icon: path.join(__dirname, "assets", "Aoi.png"),
     ignore: [
       /^\/dist-linux($|\/)/,
-      /^\/node_modules($|\/)/,
+      /^\/dist-win($|\/)/,
       /icon\.ico$/,
       /^\/make-icon\.js$/,
       /^\/pack-linux\.js$/,
+      /^\/pack-win\.js$/,
       /^\/autostart\.ps1$/,
       /^\/start-bot\.cmd$/,
       /^\/start-bot\.vbs$/,

@@ -1,6 +1,18 @@
 # 待办与已知问题（TODO）
 
-> 更新：2026-10-15（Windows 便携发行包 / 凭据加密存储 / 全网密码轮换）
+> 更新：2026-10-15（MCP 集成一等化）
+
+## P18 · MCP 集成一等化（2026-10-15）
+
+- [x] node-ctl MCP 补齐为 **13 工具**（新增：node_health / node_list_sessions / node_session_messages / node_permissions / node_reply_permission / node_interrupt / node_reset；密码经加密存储解封）
+- [x] App「主控」页新增 **MCP 集成卡片**：状态检测（已配置/路径失效/未配置/未找到）、一键写入/更新（jsonc-parser 保注释保格式）、**手动路径兜底**（记忆路径）、路径漂移一键修复、移除、写入前自动备份（`*.mesh-bak-*`）+ 校验回滚
+- [x] 默认仅写 node-ctl，**自动移除 fleet 明文条目**；「保留 fleet 写入」为高级选项（fleet 剔除论证见 DEPLOY §5.5）
+- [x] 本机实机切换完成：fleet 明文条目已移除（备份 `opencode.jsonc.mesh-bak-2026-10-15T11-03-19`）
+- [x] 单测 16 项全过（保注释/迁移清理/幂等/漂移检测修复/移除/状态机）
+- [ ] **重启 opencode 验证**：fleet_* 工具移除、node_* 13 工具可用、node_dispatch 派发成功
+- [ ] kit v1.3.0 重新打包（含 jsonc-parser 依赖打包修正与 MCP 卡片）
+- [ ] （后置）ELECTRON_RUN_AS_NODE：纯控制端免系统 Node 依赖
+- [ ] （后置）DEPLOY 补充"合并链覆盖（项目级/托管配置）"的排查指引
 
 ## P17 · Windows 便携发行包（2026-10-15）
 

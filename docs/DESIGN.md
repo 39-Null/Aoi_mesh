@@ -1,7 +1,7 @@
 # opencode-mesh · 设计文档
 
-- 版本：v0.13
-- 状态：P4 已验收（跨设备派发闭环）；消息协议 v1 已随项目更名（新标记 `[opencode-mesh ...]`，兼容旧 `[aoi-mesh ...]`）；id 身份模型与隧道自动化定稿；安全加固 + 凭据加密存储落地；向导密码严谨化（必填）、操作文档重构为逐步手册
+- 版本：v0.14
+- 状态：P4 已验收（跨设备派发闭环）；消息协议 v1 已随项目更名（新标记 `[opencode-mesh ...]`，兼容旧 `[aoi-mesh ...]`）；id 身份模型与隧道自动化定稿；安全加固 + 凭据加密存储落地；向导严谨化；MCP 集成一等化（node-ctl 13 工具 + App 一键写入）
 - 许可：MIT
 
 ---
@@ -21,6 +21,7 @@
 - v0.10 → v0.11：**统一安全加固批次**——`/register` 修复原型链绕过（keys/nodes 改无原型对象 + 自有属性校验 + 密钥格式白名单）；registry 启用**自签 TLS + 客户端指纹钉扎**（指纹随加入密钥以 `密钥.指纹` 组合串分发；握手完成、发送数据前校验，防中间人）；加入密钥默认 72h TTL；审计日志（注册/吊销/改名/密钥签发/鉴权失败）；Hub 服务降权为非 root 专用用户；agent token 恒时比较、opencode 显式 `--hostname 127.0.0.1`；敏感文件（node.json/state.json/nodes.json/visitors.toml/frpc.toml/data.json/audit.log）权限收紧（chmod 600 / Windows icacls）
 - v0.11 → v0.12：**凭据加密存储与改密内置化**——新增 `secret-store`（Windows DPAPI / Linux 密钥环 / 600 权限回退）；node.json 明文密码启动时自动迁移为 `passwordEnc`；改密校验下沉到 agent（`POST /opencode/password`，App/脚本不再读取密码值）；主控共享密码 `fleetPasswordEnc` 加密落盘、导出解封/导入封存；node-ctl 新增 `node_dispatch` MCP（加密存储取密，替代 fleet 明文 `--password` 路径）；全网统一密码完成轮换
 - v0.12 → v0.13：**向导严谨化与操作文档重构**——首次配置向导密码改为**必填**（≥8 位；取消静默自动生成，杜绝"密码不可知"；加入既有网络须填全网统一密码）；「组网」页保存不再静默生成密码（凭据缺失时引导回向导）；join.ps1/join.sh 新增 `-OpencodePassword/--oc-password`（省略时生成并告警）；DEPLOY 重构为逐步操作手册（Hub 地址三种来源、加入密钥两条路径逐条命令、密码规则与设置步骤），新增「端口与默认值（来历与理由）」章节；Windows 便携包 v1.2.1
+- v0.13 → v0.14：**MCP 集成一等化**——node-ctl MCP 补齐为 13 个工具（新增健康检查/会话浏览/会话消息/权限列表与审批/中断/会话重置，能力面覆盖并替代 fleet，凭据经加密存储解封、无明文）；App「主控」页新增 **MCP 集成卡片**（自动定位 opencode 配置 + 手动路径兜底 + 保格式写入（jsonc-parser，唯一运行时依赖）+ 备份回滚 + 路径漂移一键修复 + 移除；默认仅写 node-ctl 并迁移移除 fleet 明文条目）；docs 增补「版本迭代与配置漂移」注意事项；fleet 降级为高级可选
 
 ## 1. 定位与设计原则
 

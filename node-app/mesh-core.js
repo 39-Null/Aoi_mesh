@@ -11,6 +11,7 @@ const os = require("os");
 const http = require("http");
 const tls = require("tls");
 const crypto = require("crypto");
+const jsonc = require("jsonc-parser");
 const { spawn, exec } = require("child_process");
 
 /* ============================ 基础工具 ============================ */
@@ -342,6 +343,158 @@ function sealNodeSecrets(root, cfg) {
   delete oc.password;
   cfg.opencode = oc;
   return cfg;
+}
+
+/* ==================== MCP 集成（本机 opencode 配置：一键写入 / 修复 / 移除） ==================== */
+
+function opencodeConfigCandidates() {
+  const dir = path.join(os.homedir(), ".config", "opencode");
+  return [path.join(dir, "opencode.jsonc"), path.join(dir, "opencode.json")];
+}
+
+function mcpServerPath(root) {
+  return path.join(root, "node-ctl", "mcp-server.js").replace(/\\/g, "/");
+}
+
+/** 定位本机 opencode 配置文件：记忆的自定义路径 → OPENCODE_CONFIG 环境变量 → 标准路径 */
+function detectOpencodeConfig(root) {
+  const master = getMasterConfig(root) || {};
+  const custom = String(master.opencodeConfigPath || "").trim();
+  if (custom && fs.existsSync(custom)) return { path: custom, source: "custom", exists: true };
+  const envPath = process.env.OPENCODE_CONFIG || "";
+  if (envPath && fs.existsSync(envPath)) return { path: envPath, source: "env", exists: true };
+  for (const c of opencodeConfigCandidates()) {
+    if (fs.existsSync(c)) return { path: c, source: "standard", exists: true };
+  }
+  return { path: opencodeConfigCandidates()[0], source: "default-missing", exists: false };
+}
+
+function parseJsonc(text) {
+  const errors = [];
+  const cfg = jsonc.parse(text || "", errors, { allowTrailingComma: true, disallowComments: false });
+  return { cfg, errors };
+}
+
+/** MCP 集成状态：configured / stale（路径漂移）/ not_configured / not_found / parse_error */
+function getMcpStatus(root) {
+  ensureRepoRoot(root);
+  const det = detectOpencodeConfig(root);
+  const serverPath = mcpServerPath(root);
+  const out = {
+    path: det.path,
+    source: det.source,
+    configExists: det.exists,
+    serverPath,
+    serverExists: fs.existsSync(serverPath),
+    status: "not_found",
+    fleetPlaintext: false,
+    note: "",
+  };
+  if (!det.exists) return out;
+  let text;
+  try {
+    text = fs.readFileSync(det.path, "utf8");
+  } catch (e) {
+    out.status = "unreadable";
+    out.note = e.message;
+    return out;
+  }
+  const { cfg, errors } = parseJsonc(text);
+  if (!cfg || typeof cfg !== "object" || errors.length) {
+    out.status = "parse_error";
+    out.note = "配置文件解析失败（语法问题），未做任何修改";
+    return out;
+  }
+  const mcp = cfg.mcp || {};
+  const nc = mcp["node-ctl"];
+  out.fleetPlaintext = !!(mcp.fleet && JSON.stringify(mcp.fleet).includes("opencode-fleet"));
+  if (!nc) {
+    out.status = "not_configured";
+    return out;
+  }
+  const cmd = Array.isArray(nc.command) ? nc.command.join(" ") : "";
+  out.command = cmd;
+  out.status = cmd.includes(serverPath) ? "configured" : "stale";
+  if (out.status === "stale") out.note = "配置指向的 mcp-server.js 路径与当前位置不一致（目录被移动过？）";
+  return out;
+}
+
+function backupOpencodeConfig(file) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const bak = `${file}.mesh-bak-${stamp}`;
+  fs.copyFileSync(file, bak);
+  hardenFile(bak);
+  return bak;
+}
+
+function nodeCtlMcpEntry(root) {
+  return { type: "local", command: ["node", mcpServerPath(root)] };
+}
+
+const JSONC_FMT = { formattingOptions: { insertSpaces: true, tabSize: 2 } };
+
+/** 写入/更新 MCP 配置：node-ctl 必写；默认移除 opencode-fleet 条目（含明文密码），keepFleet=true 保留 */
+function writeMcpConfig(root, opts = {}) {
+  ensureRepoRoot(root);
+  const serverPath = mcpServerPath(root);
+  if (!fs.existsSync(serverPath)) return { ok: false, error: `未找到 ${serverPath}（仓库不完整？）` };
+  const det = detectOpencodeConfig(root);
+  const target = opts.path && String(opts.path).trim() ? path.resolve(String(opts.path).trim()) : det.path;
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+
+  let created = false;
+  let backup = "";
+  let removedFleet = false;
+  let text = "";
+  if (fs.existsSync(target)) {
+    text = fs.readFileSync(target, "utf8");
+    const { cfg } = parseJsonc(text);
+    if (!cfg || typeof cfg !== "object") return { ok: false, error: "目标文件不是有效 JSON/JSONC，未写入" };
+    backup = backupOpencodeConfig(target);
+    let next = jsonc.applyEdits(text, jsonc.modify(text, ["mcp", "node-ctl"], nodeCtlMcpEntry(root), JSONC_FMT));
+    const after = (parseJsonc(next).cfg || {}).mcp || {};
+    if (!opts.keepFleet && after.fleet && JSON.stringify(after.fleet).includes("opencode-fleet")) {
+      next = jsonc.applyEdits(next, jsonc.modify(next, ["mcp", "fleet"], undefined, JSONC_FMT));
+      removedFleet = true;
+    }
+    const check = parseJsonc(next);
+    if (!check.cfg || check.errors.length) {
+      return { ok: false, error: "写入后校验失败，已回滚（原文件未变）", backup };
+    }
+    fs.writeFileSync(target, next, "utf8");
+  } else {
+    created = true;
+    const fresh = { $schema: "https://opencode.ai/config.json", mcp: { "node-ctl": nodeCtlMcpEntry(root) } };
+    fs.writeFileSync(target, JSON.stringify(fresh, null, 2) + "\n", "utf8");
+  }
+  hardenFile(target);
+
+  // 记忆目标路径（含自定义/env 场景），便于后续状态检测与修复
+  try {
+    const master = getMasterConfig(root);
+    if (master) {
+      master.opencodeConfigPath = target;
+      saveMasterConfig(root, master);
+    }
+  } catch {}
+
+  return { ok: true, path: target, created, backup, removedFleet };
+}
+
+/** 移除 node-ctl MCP 条目（写入前自动备份） */
+function removeMcpConfig(root) {
+  ensureRepoRoot(root);
+  const det = detectOpencodeConfig(root);
+  if (!det.exists) return { ok: false, error: "未找到 opencode 配置文件" };
+  const text = fs.readFileSync(det.path, "utf8");
+  const { cfg } = parseJsonc(text);
+  if (!cfg?.mcp?.["node-ctl"]) return { ok: false, error: "配置中没有 node-ctl 条目" };
+  const backup = backupOpencodeConfig(det.path);
+  const next = jsonc.applyEdits(text, jsonc.modify(text, ["mcp", "node-ctl"], undefined, JSONC_FMT));
+  const check = parseJsonc(next);
+  if (!check.cfg || check.errors.length) return { ok: false, error: "移除后校验失败，已中止", backup };
+  fs.writeFileSync(det.path, next, "utf8");
+  return { ok: true, path: det.path, backup };
 }
 
 /* ==================== 可移植性：CLI 探测 / 端点解析 ==================== */
@@ -1271,6 +1424,11 @@ module.exports = {
   registryHttpJson,
   pinnedRequest,
   hardenFile,
+  getMcpStatus,
+  writeMcpConfig,
+  removeMcpConfig,
+  detectOpencodeConfig,
+  mcpServerPath,
   restartLocalOpencode,
   buildMasterExport,
   applyMasterImport,

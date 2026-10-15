@@ -244,6 +244,17 @@
       <div class="cardTitle">fleet 配置片段<span style="flex:1"></span><button id="btnFleetClose" class="mini ghost">收起</button></div>
       <pre class="logbox" id="fleetPre"></pre>
     </section>
+
+    <section class="card" id="mcpCard">
+      <div class="cardTitle">MCP 集成（本机 opencode）<span style="flex:1"></span><button id="btnMcpRefresh" class="mini ghost">刷新状态</button></div>
+      <div id="mcpStatus" class="dim">…</div>
+      <div class="fl" style="margin-top:6px;"><label>配置路径</label><input id="inpMcpPath" class="grow" type="text" title="留空=自动探测（$OPENCODE_CONFIG → ~/.config/opencode/opencode.jsonc）；填写=使用并记住该路径" placeholder="留空=自动探测；也可手动指定 opencode.jsonc 路径" /></div>
+      <div class="btns" style="margin-top:8px; margin-bottom:0;">
+        <button id="btnMcpWrite" class="mini" title="写入/更新 node-ctl MCP；自动移除 fleet 明文条目；写入前自动备份；重启 opencode 后生效">写入/更新 MCP 配置</button>
+        <button id="btnMcpWriteKeep" class="mini ghost" title="保留现有 fleet 条目（高级）">保留 fleet 写入</button>
+        <button id="btnMcpRemove" class="mini ghost" title="移除 node-ctl 条目（写入前自动备份）">移除 MCP 配置</button>
+      </div>
+    </section>
   </section>
 
   <div id="setupOverlay" class="overlay hidden">
@@ -613,6 +624,7 @@
   async function loadMasterTab() {
     await refreshMasterList();
     await refreshVisitorStatus();
+    await loadMcpStatus();
   }
 
   async function saveMasterForm() {
@@ -628,6 +640,7 @@
       },
       fleetPassword: $("inpFleetPass").value.trim(),
       fleetPasswordEnc: old.fleetPasswordEnc || "",
+      opencodeConfigPath: old.opencodeConfigPath || "",
       nodes: old.nodes || {},
     };
     const saveRes = await ipcRenderer.invoke("mesh:master:save", cfg);
@@ -881,6 +894,65 @@
   };
   $("btnVisLogClose").onclick = () => $("visitorLogCard").classList.add("hidden");
   $("btnFleetClose").onclick = () => $("fleetCard").classList.add("hidden");
+
+  /* ---------------- MCP 集成（本机 opencode 配置：写入/修复/移除） ---------------- */
+  async function loadMcpStatus() {
+    const el = $("mcpStatus");
+    try {
+      const s = await ipcRenderer.invoke("mesh:master:mcpStatus");
+      if (s.path) $("inpMcpPath").value = s.path;
+      const map = {
+        configured: ["已配置 ✓", "ok", `路径：${s.path}${s.fleetPlaintext ? "；另有 fleet 明文条目（建议「写入/更新」以移除）" : ""}`],
+        stale: ["路径失效", "warn", `${s.note || ""} 应指向：${s.serverPath}`],
+        not_configured: ["未配置", "warn", `配置文件：${s.path}${s.fleetPlaintext ? "；检测到 fleet 明文条目" : ""}`],
+        not_found: ["未找到配置文件", "warn", `写入时将创建：${s.path}`],
+        parse_error: ["配置文件解析失败", "bad", s.note || ""],
+        unreadable: ["配置文件不可读", "bad", s.note || ""],
+        error: ["状态检测失败", "bad", s.note || ""],
+      };
+      const [label, kind, detail] = map[s.status] || ["未知状态", "dim", ""];
+      el.textContent = "";
+      const l = document.createElement("span");
+      l.className = kind;
+      l.textContent = label;
+      const d = document.createElement("span");
+      d.className = "dim";
+      d.textContent = "　" + (detail || "");
+      el.append(l, d);
+    } catch (e) {
+      el.textContent = "状态检测失败：" + e.message;
+      el.className = "bad";
+    }
+  }
+  function renderMcpOp(r) {
+    if (!r?.ok) { setOp(`MCP 配置：失败 — ${r?.error || "未知错误"}`, "bad"); return; }
+    const parts = [];
+    if (r.created) parts.push("已创建配置文件");
+    if (r.removedFleet) parts.push("已移除 fleet 明文条目");
+    if (r.backup) parts.push(`备份：${r.backup}`);
+    parts.push("请重启 opencode 后生效");
+    setOp(`MCP 配置：${r.path}\n${parts.join("；")}`, "ok");
+  }
+  $("btnMcpRefresh").onclick = () => loadMcpStatus();
+  $("btnMcpWrite").onclick = () => withBusy($("btnMcpWrite"), "写入中…", async () => {
+    if (!confirm("写入/更新本机 opencode 的 MCP 配置？\n\n• 写入 node-ctl MCP（密码经加密存储解封，无明文）\n• 如存在 opencode-fleet 条目（含明文密码）将被移除\n• 写入前自动备份（*.mesh-bak-*）\n\n完成后需重启 opencode 生效。")) return;
+    const pathTyped = $("inpMcpPath").value.trim();
+    renderMcpOp(await ipcRenderer.invoke("mesh:master:mcpWrite", pathTyped ? { path: pathTyped } : {}));
+    await loadMcpStatus();
+  });
+  $("btnMcpWriteKeep").onclick = () => withBusy($("btnMcpWriteKeep"), "写入中…", async () => {
+    if (!confirm("保留 fleet 条目写入（高级）？\n\n• 写入/更新 node-ctl MCP\n• 保留现有 fleet 条目（其明文密码仍在配置中）\n• 写入前自动备份\n\n完成后需重启 opencode 生效。")) return;
+    const pathTyped = $("inpMcpPath").value.trim();
+    renderMcpOp(await ipcRenderer.invoke("mesh:master:mcpWrite", { keepFleet: true, ...(pathTyped ? { path: pathTyped } : {}) }));
+    await loadMcpStatus();
+  });
+  $("btnMcpRemove").onclick = () => withBusy($("btnMcpRemove"), "移除中…", async () => {
+    if (!confirm("移除本机 opencode 的 node-ctl MCP 配置？（写入前自动备份）")) return;
+    const r = await ipcRenderer.invoke("mesh:master:mcpRemove");
+    if (r?.ok) setOp(`MCP 配置已移除（备份：${r.backup || "无"}）；重启 opencode 后生效`, "ok");
+    else setOp(`移除失败：${r?.error || "未知错误"}`, "bad");
+    await loadMcpStatus();
+  });
 
   /* ---------------- 首次配置向导 / 退出 ---------------- */
   $("btnSetupStart").onclick = () => withBusy($("btnSetupStart"), "配置中…", async () => {

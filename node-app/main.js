@@ -353,6 +353,27 @@ ipcMain.handle("mesh:master:visitors:setEnabled", (_e, enabled) => mesh.setVisit
 ipcMain.handle("mesh:master:visitors:status", () => mesh.visitorStatus(ROOT));
 ipcMain.handle("mesh:master:visitors:log", () => mesh.visitorLogTail(ROOT, 150));
 ipcMain.handle("mesh:master:fleet", () => mesh.fleetSnippet(ROOT));
+ipcMain.handle("mesh:master:mcpStatus", () => {
+  try {
+    return mesh.getMcpStatus(ROOT);
+  } catch (e) {
+    return { status: "error", note: e.message };
+  }
+});
+ipcMain.handle("mesh:master:mcpWrite", (_e, opts) => {
+  try {
+    return mesh.writeMcpConfig(ROOT, opts || {});
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+ipcMain.handle("mesh:master:mcpRemove", () => {
+  try {
+    return mesh.removeMcpConfig(ROOT);
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
 ipcMain.handle("mesh:master:export", async () => {
   try {
     const payload = mesh.buildMasterExport(ROOT);
