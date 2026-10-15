@@ -217,7 +217,9 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now opencode-mesh-registry.service opencode-mesh-frps.service
+systemctl enable opencode-mesh-registry.service opencode-mesh-frps.service
+# 显式重启：确保升级场景（服务已在运行）也能应用新代码/新单元
+systemctl restart opencode-mesh-registry.service opencode-mesh-frps.service
 
 echo "==> 放行防火墙端口（firewalld，如启用）"
 if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active firewalld >/dev/null 2>&1; then
