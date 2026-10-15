@@ -14,8 +14,12 @@
 - [x] 敏感文件权限收紧：node.json/state.json/nodes.json/visitors.toml/frpc.toml/data.json（chmod 600 / icacls）
 - [x] 组合串解析：App 组网/向导、join.ps1、join.sh（`密钥.指纹` → joinKey 拆出 + hub.fingerprint 落盘）
 - [x] 文档同步：DEPLOY（TLS/迁移顺序/字段/FAQ）、USAGE、DESIGN v0.11
-- [ ] 实机部署：Hub 重跑 install.sh（打印指纹）→ 各节点粘贴 `密钥.指纹` 重启 → 控制端同步 → 全链路验证
-- [ ] 核对阿里云安全组与 firewalld 残留（14100+ 段已无需放行）
+- [x] 实机部署（2026-10-15）：Hub 升级完成（TLS 指纹 `f07238a5…10b4b`；registry/frps 降权为 opencode-mesh 用户；证书保留重跑）
+- [x] dev-node-1 切换钉扎：node.json / nodes.json 写入指纹 + agent 重启 → 注册/心跳经钉扎 HTTPS、visitor 数据面握手（open/agent 均 200）、node-ctl list 正常、审计零 auth_fail
+- [x] install.sh 修复：`enable --now` 不会重启运行中的服务（升级场景失效）→ 改为显式 `systemctl restart`
+- [x] 公网暴露核对：firewalld 未启用；外部探测仅 17000/18080 可达，14100+ 段全部丢包（安全组已阻断）
+- [ ] deepin-1 上线后更新：`git pull` + 组网页粘贴 `旧密钥.指纹`（或写 node.json hub.fingerprint）+ 重启节点（旧代码不支持 TLS，未更新将无法注册上线）
+- [ ] 重启桌面 App 加载新版前端（齿轮改密、组合密钥提示）
 - [ ] （缓做）frps 控制口 TLS；SSH 一次性加固核对清单
 
 ## P13 · 密码修改流程重构（2026-10-15）
