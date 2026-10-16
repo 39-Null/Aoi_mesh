@@ -97,12 +97,13 @@
   <nav id="tabs">
     <button class="tab active" data-tab="local">本机</button>
     <button class="tab" data-tab="network">组网</button>
+    <button class="tab" data-tab="control">控制端</button>
     <button class="tab" data-tab="master">主控</button>
   </nav>
 
   <!-- ======================= 本机 ======================= -->
   <section data-tab-content="local">
-    <div class="dim" style="font-size:12px; margin-bottom:8px;">本机运行状态与诊断（opencode 服务 / 远程连接 / 日志 / Token）</div>
+    <div class="dim" style="font-size:12px; margin-bottom:8px;">本机服务状态与 Telegram Bot（远程连接 / 诊断 / 日志 / Token）</div>
     <header>
       <span id="dot"></span>
       <div>
@@ -195,9 +196,9 @@
     </section>
   </section>
 
-  <!-- ======================= 主控 ======================= -->
-  <section data-tab-content="master" class="hidden">
-    <div class="dim" style="font-size:12px; margin-bottom:8px;">控制端（主控）范围：节点管理、隧道、MCP 集成与控制端凭据</div>
+  <!-- ======================= 控制端（本机控制侧配置） ======================= -->
+  <section data-tab-content="control" class="hidden">
+    <div class="dim" style="font-size:12px; margin-bottom:8px;">本机作为控制端的配置：凭据、隧道（visitor）、MCP 集成</div>
 
     <section class="card">
       <div class="cardTitle">控制端凭据（可选） <span class="dim">（平权模式：注册后即可管理/邀请其他设备，通常无需密钥）</span></div>
@@ -211,16 +212,6 @@
         <button id="btnMasterExport" class="mini ghost" title="把控制端配置打包到剪贴板，用于快速配置其他控制端">导出到剪贴板</button>
         <button id="btnMasterImport" class="mini ghost" title="从剪贴板导入控制端配置并自动同步（多控制端一键就绪）">从剪贴板导入</button>
       </div>
-    </section>
-
-    <section class="card">
-      <div class="cardTitle">节点管理</div>
-      <div class="btns" style="margin-bottom:8px;">
-        <button id="btnNodeSync" class="mini">同步节点（自动配置）</button>
-        <button id="btnNodeListRefresh" class="mini ghost">刷新列表</button>
-        <button id="btnNodePrune" class="mini ghost">清理失效节点</button>
-      </div>
-      <div id="nodeList" class="dim">（点击「同步节点」自动从注册中心拉取）</div>
     </section>
 
     <section class="card">
@@ -246,6 +237,21 @@
         <button id="btnMcpWriteKeep" class="mini ghost" title="保留现有 fleet 条目（高级）">保留 fleet 写入</button>
         <button id="btnMcpRemove" class="mini ghost" title="移除 node-ctl 条目（写入前自动备份）">移除 MCP 配置</button>
       </div>
+    </section>
+  </section>
+
+  <!-- ======================= 主控（多设备操作） ======================= -->
+  <section data-tab-content="master" class="hidden">
+    <div class="dim" style="font-size:12px; margin-bottom:8px;">多设备操作：节点管理与 fleet 编排</div>
+
+    <section class="card">
+      <div class="cardTitle">节点管理</div>
+      <div class="btns" style="margin-bottom:8px;">
+        <button id="btnNodeSync" class="mini">同步节点（自动配置）</button>
+        <button id="btnNodeListRefresh" class="mini ghost">刷新列表</button>
+        <button id="btnNodePrune" class="mini ghost">清理失效节点</button>
+      </div>
+      <div id="nodeList" class="dim">（点击「同步节点」自动从注册中心拉取）</div>
     </section>
 
     <section class="card">
@@ -328,6 +334,7 @@
     document.querySelectorAll("#tabs .tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
     document.querySelectorAll("[data-tab-content]").forEach((s) => s.classList.toggle("hidden", s.dataset.tabContent !== name));
     if (name === "network") loadNodeForm();
+    if (name === "control") loadControlTab();
     if (name === "master") loadMasterTab();
   }
 
@@ -622,11 +629,15 @@
   $("btnAgentLogRefresh").onclick = () => loadAgentLog();
 
   /* ---------------- 主控 ---------------- */
+  async function loadControlTab() {
+    await loadCtlFields();
+    await refreshVisitorStatus();
+    await loadMcpStatus();
+  }
+
   async function loadMasterTab() {
     await loadCtlFields();
     await refreshMasterList();
-    await refreshVisitorStatus();
-    await loadMcpStatus();
   }
 
   /** 控制端凭据与 Hub 连接字段（卡片位于「主控」页；与「组网」页双向同步） */
@@ -720,6 +731,7 @@
       setOp(`导入成功（${parts.join("，")}）`, "ok");
       await loadNodeForm();
       await loadCtlFields();
+      await refreshVisitorStatus();
       await refreshMasterList();
       if (beforeHub && r.registry.address !== beforeHub) {
         setOp(
