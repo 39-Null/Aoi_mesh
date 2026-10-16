@@ -56,7 +56,7 @@ README-安装说明.md    本文件
 
 ## 完整性校验（可选）
 
-使用发布页随附的 `SHA256SUMS` 校验（Windows：`certutil -hashfile <zip> SHA256`）。
+使用分发时随附的 `SHA256SUMS` 校验（Windows：`certutil -hashfile <zip> SHA256`，与对应行比对）。
 
 ## 卸载
 

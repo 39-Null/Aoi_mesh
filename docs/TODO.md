@@ -5,7 +5,7 @@
 ## 进行中
 
 ### 发布与分发
-- [ ] GitHub Release：打 tag 后上传 Windows 便携包（zip + SHA256SUMS）作为发行附件
+- [ ] GitHub Release：打 tag 后上传 Windows 便携包（zip + SHA256SUMS）作为发行附件（暂缓：更新已走源码通道——应用内「版本与更新」；需要分发下载页时再启用）
 - [ ] CI（GitHub Actions）：tag 触发 Windows / Linux 双平台构建与校验和产出
 - [ ] Linux 便携包改用 `scripts/pack-kit.js` 统一组装（替换手工拼装流程）
 
