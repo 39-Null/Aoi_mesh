@@ -135,13 +135,13 @@ function nodeRuntime(nodeName) {
   const hit = resolveNodeEntry(loaded.config, nodeName);
   if (!hit?.node?.opencodeUrl) throw new Error(`节点 "${nodeName}" 缺少 opencodeUrl（先在 App「主控」页同步节点）`);
   const pw = resolveFleetPassword(loaded.config);
-  if (!pw) throw new Error("缺少统一密码（共享密码未设置，请在 App「主控」页设置）");
+  if (!pw) throw new Error("缺少统一密码（请在 App「设置」页配置本机节点密码，或从其他控制端导入配置）");
   return { cfgPath: loaded.path, config: loaded.config, key: hit.key, node: hit.node, nodeCfg: { ...hit.node, opencodePassword: pw } };
 }
 
 async function oc(nodeCfg, method, p, body, timeoutMs = 15000) {
   const r = await opencodeApi(nodeCfg, method, p, body, timeoutMs);
-  if (r.status === 401) throw new Error("密码校验失败（401）：共享密码与该节点不一致（对比 App「主控」页共享密码）");
+  if (r.status === 401) throw new Error("密码校验失败（401）：该节点 opencode 密码与网络统一密码不一致（请在各节点「设置」页 ⚙ 修改密码保持一致）");
   if (r.status === 0) throw new Error(`无法连接节点 opencode：${r.text}（确认隧道已启动且节点在线）`);
   return r;
 }

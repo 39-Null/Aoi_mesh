@@ -1,12 +1,21 @@
-const { app, BrowserWindow, ipcMain, shell, clipboard, Tray, Menu, nativeImage } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, clipboard, Tray, Menu, nativeImage, net } = require("electron");
 const { exec, execFile } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const mesh = require("./mesh-core");
+let mesh = require("./mesh-core");
 
 const IS_WIN = process.platform === "win32";
 const ROOT = mesh.findRepoRoot();
+
+// 薄壳化：发行版优先加载仓库目录中的 mesh-core（asar 内置副本仅作引导与兜底）。
+// 仓库副本存在时以它为准——这样「拉取源码覆盖」即可更新界面与应用逻辑。
+try {
+  const repoMesh = path.join(ROOT, "node-app", "mesh-core.js");
+  if (fs.existsSync(repoMesh)) mesh = require(repoMesh);
+} catch (e) {
+  console.error("[mesh] 仓库 mesh-core 加载失败，回退内置副本：", e.message);
+}
 const APP_HOME = IS_WIN
   ? path.join(process.env.APPDATA || "", "opencode-telegram-bot")
   : path.join(os.homedir(), ".config", "opencode-telegram-bot");
@@ -311,7 +320,7 @@ ipcMain.handle("logs:openDir", () => {
 });
 ipcMain.handle("token:rotate", (_e, token) => rotateToken(token));
 
-/* ==================== 组网 / 主控（mesh-core） ==================== */
+/* ==================== 设置 / 主控（mesh-core） ==================== */
 ipcMain.handle("mesh:node:get", () => mesh.getNodeConfig(ROOT));
 ipcMain.handle("mesh:node:save", (_e, cfg) => {
   try {
@@ -395,6 +404,179 @@ ipcMain.handle("mesh:master:import", async () => {
   }
 });
 
+/* ==================== 应用更新（设置页「应用 · 版本与更新」） ==================== */
+
+const UPDATE_REPO = { owner: "39-Null", repo: "Opencode_mesh" }; // canonical 仓库名（旧名 Aoi_mesh 由 GitHub 重定向）
+
+function localAppVersion() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(ROOT, "node-app", "package.json"), "utf8")).version || "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
+/** Electron net 请求（自动跟随系统代理；跟随 3xx 一次兜底） */
+function netRequest(url, { timeoutMs = 20000 } = {}) {
+  return new Promise((resolve) => {
+    let req;
+    try { req = net.request(url); } catch (e) { return resolve({ ok: false, error: e.message }); }
+    let data = "";
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    const timer = setTimeout(() => { try { req.abort(); } catch {} finish({ ok: false, error: "请求超时" }); }, timeoutMs);
+    req.on("response", (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        clearTimeout(timer);
+        const loc = res.headers.location;
+        try { req.abort(); } catch {}
+        const next = Array.isArray(loc) ? loc[0] : loc;
+        netRequest(next, { timeoutMs }).then(finish);
+        return;
+      }
+      res.on("data", (c) => (data += c));
+      res.on("end", () => { clearTimeout(timer); finish({ ok: res.statusCode < 400, status: res.statusCode, text: data }); });
+    });
+    req.on("error", (e) => { clearTimeout(timer); finish({ ok: false, error: e.message }); });
+    req.end();
+  });
+}
+
+/** Electron net 流式下载到文件 */
+function netDownload(url, dest, { timeoutMs = 120000 } = {}) {
+  return new Promise((resolve) => {
+    let req;
+    try { req = net.request(url); } catch (e) { return resolve({ ok: false, error: e.message }); }
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    const timer = setTimeout(() => { try { req.abort(); } catch {} finish({ ok: false, error: "下载超时" }); }, timeoutMs);
+    req.on("response", (res) => {
+      if (res.statusCode >= 400) {
+        clearTimeout(timer);
+        res.resume();
+        return finish({ ok: false, error: `HTTP ${res.statusCode}` });
+      }
+      const ws = fs.createWriteStream(dest);
+      res.pipe(ws);
+      ws.on("finish", () => { clearTimeout(timer); finish({ ok: true }); });
+      ws.on("error", (e) => { clearTimeout(timer); finish({ ok: false, error: e.message }); });
+      res.on("error", (e) => { clearTimeout(timer); finish({ ok: false, error: e.message }); });
+    });
+    req.on("error", (e) => { clearTimeout(timer); finish({ ok: false, error: e.message }); });
+    req.end();
+  });
+}
+
+/** 网络受限回退：系统 curl + 现有 bot 代理配置（mihomo 等） */
+async function curlFallback(args, timeoutMs) {
+  const ex = await execFileP(IS_WIN ? "curl.exe" : "curl", args, timeoutMs);
+  if (ex.err) return null;
+  return ex.stdout + ex.stderr;
+}
+
+async function fetchJsonWithFallback(url) {
+  const r = await netRequest(url);
+  if (r.ok) return r;
+  const proxy = curlProxyArg();
+  const base = ["-L", "--fail", "--silent", "--show-error"];
+  const out = await curlFallback([...base, "--proxy", proxy, url], 30000);
+  if (out === null) return { ok: false, error: `请求失败（${r.error}），curl 回退（代理 ${proxy}）亦失败` };
+  return { ok: true, text: out };
+}
+
+async function downloadWithFallback(url, dest) {
+  const r = await netDownload(url, dest);
+  if (r.ok) return r;
+  const proxy = curlProxyArg();
+  const out = await curlFallback(["-L", "--fail", "--silent", "--show-error", "-o", dest, "--proxy", proxy, url], 120000);
+  if (out === null) return { ok: false, error: `下载失败（${r.error}），curl 回退（代理 ${proxy}）亦失败` };
+  return { ok: true };
+}
+
+async function updateCheck() {
+  const current = localAppVersion();
+  const r = await fetchJsonWithFallback(`https://api.github.com/repos/${UPDATE_REPO.owner}/${UPDATE_REPO.repo}/tags`);
+  if (!r.ok) return { ok: false, error: r.error };
+  let tags = null;
+  try { tags = JSON.parse(r.text); } catch {}
+  if (!Array.isArray(tags)) return { ok: false, error: "GitHub 返回内容异常（可能网络受限）" };
+  const latest = mesh.pickLatestTag(tags);
+  if (!latest) return { ok: false, error: "远端没有可用版本 tag" };
+  return {
+    ok: true,
+    current,
+    latest: latest.version,
+    tag: latest.tag,
+    sha: latest.sha,
+    hasUpdate: mesh.compareVersions(latest.version, current) > 0,
+  };
+}
+
+async function updateApply({ tag } = {}) {
+  const tagName = String(tag || "");
+  if (!/^v?\d+\.\d+\.\d+$/.test(tagName)) return { ok: false, error: "无效的版本 tag" };
+  if (fs.existsSync(path.join(ROOT, ".git"))) {
+    return { ok: false, error: "检测到 git 仓库（开发环境）：请使用 git pull 更新" };
+  }
+  if (!fs.existsSync(path.join(ROOT, "node-app", "index.html"))) {
+    return { ok: false, error: "当前安装不支持应用内更新（缺少薄壳结构）：请手动更换新版便携包" };
+  }
+  const tmpBase = path.join(os.tmpdir(), `opencode-mesh-upd-${Date.now()}`);
+  fs.mkdirSync(tmpBase, { recursive: true });
+  try {
+    const tarPath = path.join(tmpBase, "snapshot.tar.gz");
+    const url = `https://api.github.com/repos/${UPDATE_REPO.owner}/${UPDATE_REPO.repo}/tarball/refs/tags/${tagName}`;
+    const dl = await downloadWithFallback(url, tarPath);
+    if (!dl.ok) return { ok: false, error: dl.error };
+    const size = fs.statSync(tarPath).size;
+    if (size < 10000) return { ok: false, error: `下载内容异常（仅 ${size} 字节）` };
+    const ex = await execFileP("tar", ["-xzf", tarPath, "-C", tmpBase], 120000);
+    if (ex.err) return { ok: false, error: `解压失败：${ex.stderr || ex.err.message}` };
+    const dirs = fs.readdirSync(tmpBase, { withFileTypes: true }).filter((e) => e.isDirectory());
+    if (dirs.length !== 1) return { ok: false, error: "快照目录结构异常" };
+    const srcRoot = path.join(tmpBase, dirs[0].name);
+    let files = 0;
+    (function walk(d) {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) walk(p);
+        else files++;
+      }
+    })(srcRoot);
+    fs.cpSync(srcRoot, ROOT, {
+      recursive: true,
+      force: true,
+      filter: (src) => {
+        const rel = path.relative(srcRoot, src).replace(/\\/g, "/");
+        if (!rel) return true;
+        if (rel === "node-agent/node.json" || rel.startsWith("node-agent/data/")) return false;
+        if (rel === "node-ctl/nodes.json" || rel === "node-ctl/visitors.toml") return false;
+        if (rel === "node_modules" || rel.startsWith("node-app/node_modules")) return false;
+        return true;
+      },
+    });
+    return { ok: true, tag: tagName, latest: tagName.replace(/^v/, ""), files };
+  } finally {
+    fs.rmSync(tmpBase, { recursive: true, force: true });
+  }
+}
+
+ipcMain.handle("app:update:current", () => ({ ok: true, version: localAppVersion() }));
+ipcMain.handle("app:update:check", async () => {
+  try {
+    return await updateCheck();
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+ipcMain.handle("app:update:apply", async (_e, opts) => {
+  try {
+    return await updateApply(opts || {});
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
 let mainWindow = null;
 let tray = null;
 let trayHintShown = false;
@@ -419,7 +601,10 @@ function createWindow() {
     ...(fs.existsSync(ICON) ? { icon: ICON } : {}),
     webPreferences: { nodeIntegration: true, contextIsolation: false },
   });
-  mainWindow.loadFile("index.html");
+  // 薄壳化：优先加载仓库目录中的界面（asar 内置副本仅作兜底）
+  const repoIndex = path.join(ROOT, "node-app", "index.html");
+  if (fs.existsSync(repoIndex)) mainWindow.loadFile(repoIndex);
+  else mainWindow.loadFile("index.html");
   // 关闭窗口 = 最小化到系统托盘（节点 agent / 隧道为独立进程，继续运行）
   mainWindow.on("close", (e) => {
     if (!app.isQuitting) {

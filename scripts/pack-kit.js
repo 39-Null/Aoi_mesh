@@ -44,6 +44,7 @@ function copyFile(rel, dst) {
 function copyTree(rel, dst) {
   const src = path.join(REPO, rel);
   if (!fs.existsSync(src)) throw new Error(`缺少源目录：${rel}`);
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
   fs.cpSync(src, dst, { recursive: true });
 }
 
@@ -118,6 +119,11 @@ function makeArchive(platform, outDir, kitName) {
   for (const f of ["agent.js", "secret-store.js", "package.json"]) {
     copyFile(path.join("node-agent", f), path.join(snap, "node-agent", f));
   }
+  // App 界面与逻辑源码（薄壳化：发行版优先从仓库快照加载这些文件，asar 内置副本仅作兜底）
+  for (const f of ["index.html", "mesh-core.js", "package.json"]) {
+    copyFile(path.join("node-app", f), path.join(snap, "node-app", f));
+  }
+  copyTree(path.join("node-app", "node_modules", "jsonc-parser"), path.join(snap, "node-app", "node_modules", "jsonc-parser"));
   const frpcName = platform === "win" ? "frpc.exe" : "frpc";
   copyFile(path.join("node-agent", "bin", frpcName), path.join(snap, "node-agent", "bin", frpcName));
   if (platform === "win") {

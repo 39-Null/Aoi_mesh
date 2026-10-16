@@ -921,7 +921,7 @@ async function registryFrps(root, reg) {
 async function syncMasterNodes(root) {
   const cfg = getMasterConfig(root) || {};
   const rq = registryRequest(root, cfg.registry);
-  if (!rq.address) return { ok: false, error: "尚未配置 Hub（请先在「组网」页填写 Hub 连接）" };
+  if (!rq.address) return { ok: false, error: "尚未配置 Hub（请先在「设置」页填写 Hub 连接）" };
   const nodes = await registryNodes(root, cfg.registry);
   if (!nodes) return { ok: false, error: "无法获取节点列表（检查 Hub 连通性与本机节点凭据）" };
   const map = cfg.nodes || {};
@@ -967,7 +967,7 @@ async function restartLocalOpencode(root) {
 }
 
 /**
- * 修改本机 opencode 密码（「组网」页齿轮入口）。
+ * 修改本机 opencode 密码（「设置」页齿轮入口）。
  * 验证与持久化均由 node-agent 内置完成（App 不读取密码值）：
  * agent 校验旧密码 → 加密存储（DPAPI/密钥环）→ 重启 opencode 生效。
  */
@@ -975,7 +975,7 @@ async function changeNodePassword(root, opts = {}) {
   ensureRepoRoot(root);
   const cfg = readJson(path.join(agentDir(root), "node.json"));
   const state = readJson(path.join(agentDir(root), "data", "state.json"));
-  if (!cfg) return { ok: false, error: "节点尚未配置（请先在向导或「组网」页完成配置）" };
+  if (!cfg) return { ok: false, error: "节点尚未配置（请先在向导或「设置」页完成配置）" };
   if (!state?.token) return { ok: false, error: "agent 尚未注册（请先启动节点）" };
   const recorded = readPidFile(root, "agent");
   if (!recorded || !isPidAlive(recorded.pid)) return { ok: false, error: "agent 未运行（请先启动节点）" };
@@ -1115,7 +1115,7 @@ async function nodeAction(root, name, action) {
   if (r.status === 0) {
     return {
       ok: false,
-      error: `无法连接（${r.text}）——请确认该节点的 agent 已启动（节点本机的「组网」页），以及主控隧道可用`,
+      error: `无法连接（${r.text}）——请确认该节点的 agent 已启动（节点本机的「设置」页），以及主控隧道可用`,
     };
   }
   if (!r.json) return { ok: false, error: `非 JSON 响应（${r.status}）` };
@@ -1126,7 +1126,7 @@ async function generateVisitors(root) {
   ensureRepoRoot(root);
   const cfg = getMasterConfig(root) || {};
   const rq = registryRequest(root, cfg.registry);
-  if (!rq.address) return { ok: false, error: "尚未配置 Hub（请先在「组网」页填写 Hub 连接）" };
+  if (!rq.address) return { ok: false, error: "尚未配置 Hub（请先在「设置」页填写 Hub 连接）" };
   const nodes = await registryNodes(root, cfg.registry);
   if (!nodes) return { ok: false, error: "无法获取节点列表（检查 Hub 连通性与本机节点凭据）" };
   const frps = await registryFrps(root, cfg.registry);
@@ -1303,17 +1303,11 @@ async function setVisitorEnabled(root, enabled) {
   return { ok: r.ok, running: false, pid: r.pid, error: r.error };
 }
 
-/** 打包主控配置（多控制端一键迁移用；含管理密钥，属密码级敏感信息） */
+/** 打包主控配置（备份/迁移用；含节点凭据，属密码级敏感信息。不含共享密码——接收端自动派生） */
 function buildMasterExport(root) {
   const cfg = getMasterConfig(root);
-  if (!cfg?.registry?.address || !cfg.registry.adminToken) {
-    throw new Error("主控配置不完整（缺少 Hub 地址或管理密钥），无法导出");
-  }
-  let fleetPassword = "";
-  try {
-    fleetPassword = cfg.fleetPasswordEnc ? secretStore(root).unseal(cfg.fleetPasswordEnc) : (cfg.fleetPassword || "");
-  } catch (e) {
-    throw new Error("共享密码解密失败（" + (e.message || e) + "），无法导出");
+  if (!cfg?.registry?.address) {
+    throw new Error("主控配置不完整（缺少 Hub 地址），无法导出");
   }
   return {
     app: "opencode-mesh",
@@ -1321,12 +1315,11 @@ function buildMasterExport(root) {
     version: 1,
     exportedAt: new Date().toISOString(),
     registry: cfg.registry,
-    fleetPassword,
     nodes: cfg.nodes || {},
   };
 }
 
-/** 应用导入的主控配置：校验格式 → 合并保存（节点表以导入值为准） */
+/** 应用导入的主控配置：校验格式 → 合并保存（节点表以导入值为准；不含共享密码——本机自动派生） */
 function applyMasterImport(root, raw) {
   let data = raw;
   if (typeof raw === "string") {
@@ -1339,27 +1332,22 @@ function applyMasterImport(root, raw) {
   if (!data || data.app !== "opencode-mesh" || data.kind !== "master-config") {
     throw new Error("剪贴板内容不是 Aoi mesh 主控配置（缺少标识）");
   }
-  if (!data.registry?.address || !data.registry?.adminToken) {
-    throw new Error("导入配置缺少 Hub 地址或管理密钥");
+  if (!data.registry?.address) {
+    throw new Error("导入配置缺少 Hub 地址");
   }
   const cfg = getMasterConfig(root) || {};
   const mergedNodes = { ...(cfg.nodes || {}), ...(data.nodes || {}) };
   for (const [k, v] of Object.entries(mergedNodes)) {
     if (v && typeof v === "object" && !v.name) v.name = k;
   }
-  let fleetPasswordEnc = cfg.fleetPasswordEnc || "";
-  if (data.fleetPassword) {
-    // 导入的明文共享密码 → 立即封存（密钥环不可用时回退 plain:，仍受 600 权限保护）
-    fleetPasswordEnc = secretStore(root).seal(String(data.fleetPassword), { keyId: "master-fleet-password" });
-  }
   const merged = {
     registry: {
       address: String(data.registry.address),
       port: parseInt(data.registry.port, 10) || 18080,
-      adminToken: String(data.registry.adminToken),
+      adminToken: String(data.registry.adminToken || cfg.registry?.adminToken || ""),
       fingerprint: String(data.registry.fingerprint || cfg.registry?.fingerprint || ""),
     },
-    fleetPasswordEnc,
+    fleetPasswordEnc: cfg.fleetPasswordEnc || "",
     nodes: mergedNodes,
   };
   saveMasterConfig(root, merged);
@@ -1402,7 +1390,7 @@ async function fleetSnippet(root) {
     }
   }
   if (!password) {
-    return { ok: false, error: "未设置共享 opencode 密码：请在「主控」页填写，或在「组网」页配置本机节点密码" };
+    return { ok: false, error: "未设置共享 opencode 密码：请先完成本机入网（密码自动派生），或从其他控制端导入配置" };
   }
   const snippet = `"fleet": {
   "type": "local",
@@ -1416,9 +1404,39 @@ async function fleetSnippet(root) {
   return { ok: true, snippet };
 }
 
+/* ============================ 版本与更新工具 ============================ */
+
+/** 比较 x.y.z 版本号：a>b 返回 1，相等 0，a<b 返回 -1（忽略 v 前缀与预发布后缀） */
+function compareVersions(a, b) {
+  const pa = String(a).replace(/^v/, "").split("-")[0].split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = String(b).replace(/^v/, "").split("-")[0].split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    const x = pa[i] || 0;
+    const y = pb[i] || 0;
+    if (x !== y) return x > y ? 1 : -1;
+  }
+  return 0;
+}
+
+/** 从 GitHub tags API 列表挑选最大稳定版本（仅 x.y.z 形 tag；忽略预发布） */
+function pickLatestTag(tags) {
+  const stable = (tags || []).filter((t) => t && /^v?\d+\.\d+\.\d+$/.test(String(t.name || "")));
+  if (!stable.length) return null;
+  stable.sort((a, b) => compareVersions(String(b.name), String(a.name)));
+  const t = stable[0];
+  return {
+    tag: String(t.name),
+    version: String(t.name).replace(/^v/, ""),
+    sha: t.commit?.sha || "",
+    tarballUrl: t.tarball_url || "",
+  };
+}
+
 module.exports = {
   resolveBotCli,
   resolveNodeRuntime,
+  compareVersions,
+  pickLatestTag,
   findRepoRoot,
   registryRequest,
   registryHttpJson,

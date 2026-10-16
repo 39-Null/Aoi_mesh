@@ -91,19 +91,19 @@
   .setupSub { font-size: 12px; color: #8a94a6; margin: 6px 0 12px; }
   .fl { display: flex; align-items: center; gap: 8px; padding: 4px 0; flex-wrap: wrap; }
   .fl label { color: #b9bec7; flex: none; min-width: 84px; font-size: 12px; }
+  .groupLabel { font-size: 11px; color: #8a94a6; letter-spacing: 1px; margin: 14px 2px 8px; }
 </style>
 </head>
 <body>
   <nav id="tabs">
     <button class="tab active" data-tab="local">本机</button>
-    <button class="tab" data-tab="network">组网</button>
-    <button class="tab" data-tab="control">控制端</button>
     <button class="tab" data-tab="master">主控</button>
+    <button class="tab" data-tab="settings">设置</button>
   </nav>
 
   <!-- ======================= 本机 ======================= -->
   <section data-tab-content="local">
-    <div class="dim" style="font-size:12px; margin-bottom:8px;">本机服务状态与 Telegram Bot（远程连接 / 诊断 / 日志 / Token）</div>
+    <div class="dim" style="font-size:12px; margin-bottom:8px;">本机服务状态与 Telegram Bot（远程连接 / 诊断 / 日志）</div>
     <header>
       <span id="dot"></span>
       <div>
@@ -142,19 +142,12 @@
       </div>
       <pre class="logbox" id="logPre">…</pre>
     </section>
-
-    <section class="card">
-      <div class="cardTitle">Token 轮换</div>
-      <div class="btns" style="margin-bottom:0;">
-        <input id="inpToken" class="grow" type="password" placeholder="粘贴新 token" autocomplete="off" />
-        <button id="btnToken" class="mini">更新并重启</button>
-      </div>
-    </section>
   </section>
 
-  <!-- ======================= 组网 ======================= -->
-  <section data-tab-content="network" class="hidden">
-    <div class="dim" style="font-size:12px; margin-bottom:8px;">把本机加入网络：Hub 连接、节点身份、端口与密码、节点启停</div>
+  <!-- ======================= 设置（本机设置） ======================= -->
+  <section data-tab-content="settings" class="hidden">
+    <div class="dim" style="font-size:12px; margin-bottom:8px;">本机设置：节点接入与身份、控制端隧道与 MCP、Telegram Bot</div>
+    <div class="groupLabel">— 本机节点 —</div>
     <section class="card">
       <div class="cardTitle">Hub 连接 <span class="dim">（本机节点与控制端共用，保存会同步两处）</span></div>
       <div class="fl"><label>Hub 地址</label><input id="inpHubAddr" class="grow" type="text" placeholder="例如 hub.example.com 或 1.2.3.4" /><input id="inpHubPort" class="short" type="number" placeholder="18080" /></div>
@@ -194,25 +187,8 @@
       <div class="cardTitle">agent 日志尾部<span style="flex:1"></span><button id="btnAgentLogClose" class="mini ghost">收起</button></div>
       <pre class="logbox" id="agentLogPre">…</pre>
     </section>
-  </section>
 
-  <!-- ======================= 控制端（本机控制侧配置） ======================= -->
-  <section data-tab-content="control" class="hidden">
-    <div class="dim" style="font-size:12px; margin-bottom:8px;">本机作为控制端的配置：凭据、隧道（visitor）、MCP 集成</div>
-
-    <section class="card">
-      <div class="cardTitle">控制端凭据（可选） <span class="dim">（平权模式：注册后即可管理/邀请其他设备，通常无需密钥）</span></div>
-      <div class="fl"><label>共享密码</label><input id="inpFleetPass" class="grow" type="password" placeholder="各节点统一的 opencode 密码" /></div>
-      <details>
-        <summary class="dim" style="cursor:pointer; font-size:12px; padding:4px 0;">高级：所有者密钥</summary>
-        <div class="fl"><label>管理密钥</label><input id="inpRegToken" class="grow" type="password" placeholder="可留空" /></div>
-      </details>
-      <div class="btns" style="margin-top:8px; margin-bottom:0;">
-        <button id="btnCtlSave" class="mini">保存</button>
-        <button id="btnMasterExport" class="mini ghost" title="把控制端配置打包到剪贴板，用于快速配置其他控制端">导出到剪贴板</button>
-        <button id="btnMasterImport" class="mini ghost" title="从剪贴板导入控制端配置并自动同步（多控制端一键就绪）">从剪贴板导入</button>
-      </div>
-    </section>
+    <div class="groupLabel">— 控制端 —</div>
 
     <section class="card">
       <div class="cardTitle">节点隧道（visitor）<span class="dim">（全自动运行；同步节点时自动更新）</span></div>
@@ -234,8 +210,37 @@
       <div class="fl" style="margin-top:6px;"><label>配置路径</label><input id="inpMcpPath" class="grow" type="text" title="留空=自动探测（$OPENCODE_CONFIG → ~/.config/opencode/opencode.jsonc）；填写=使用并记住该路径" placeholder="留空=自动探测；也可手动指定 opencode.jsonc 路径" /></div>
       <div class="btns" style="margin-top:8px; margin-bottom:0;">
         <button id="btnMcpWrite" class="mini" title="写入/更新 node-ctl MCP；自动移除 fleet 明文条目；写入前自动备份；重启 opencode 后生效">写入/更新 MCP 配置</button>
-        <button id="btnMcpWriteKeep" class="mini ghost" title="保留现有 fleet 条目（高级）">保留 fleet 写入</button>
+        <button id="btnMcpWriteKeep" class="mini ghost" title="保留现有 fleet 条目">保留 fleet 写入</button>
         <button id="btnMcpRemove" class="mini ghost" title="移除 node-ctl 条目（写入前自动备份）">移除 MCP 配置</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="cardTitle">控制端配置备份<span class="dim">（导出 / 导入用于备份或迁移到其他设备）</span></div>
+      <div class="btns" style="margin-top:8px; margin-bottom:0;">
+        <button id="btnMasterExport" class="mini ghost" title="把控制端配置打包到剪贴板（含凭据，请勿外发），用于备份或迁移到其他设备">导出到剪贴板</button>
+        <button id="btnMasterImport" class="mini ghost" title="从剪贴板导入控制端配置并自动同步节点">从剪贴板导入</button>
+      </div>
+    </section>
+
+    <div class="groupLabel">— Telegram Bot —</div>
+
+    <section class="card">
+      <div class="cardTitle">Bot Token 轮换</div>
+      <div class="dim" style="font-size:12px; margin-bottom:6px;">更新 Telegram Bot token 并重启远程连接</div>
+      <div class="btns" style="margin-bottom:0;">
+        <input id="inpToken" class="grow" type="password" placeholder="粘贴新 bot token" autocomplete="off" />
+        <button id="btnToken" class="mini">更新并重启</button>
+      </div>
+    </section>
+
+    <div class="groupLabel">— 应用 —</div>
+
+    <section class="card">
+      <div class="cardTitle">版本与更新<span style="flex:1"></span><button id="btnUpdCheck" class="mini ghost">检查更新</button></div>
+      <div id="updStatus" class="dim">…</div>
+      <div class="btns" style="margin-top:8px; margin-bottom:0;">
+        <button id="btnUpdApply" class="mini" disabled title="从 GitHub 拉取最新源码（运行时+界面）覆盖本机；数据文件不受影响">立即更新</button>
       </div>
     </section>
   </section>
@@ -255,7 +260,7 @@
     </section>
 
     <section class="card">
-      <div class="cardTitle">编排（opencode-fleet · 高级/兼容）</div>
+      <div class="cardTitle">编排（opencode-fleet）</div>
       <div class="btns" style="margin-bottom:0;">
         <button id="btnFleet" class="mini">生成 fleet 配置片段</button>
       </div>
@@ -270,7 +275,7 @@
   <div id="setupOverlay" class="overlay hidden">
     <div class="setupCard">
       <div class="setupTitle">首次使用 · 快速配置</div>
-      <div class="setupSub">将本机接入 Aoi mesh 网络。需要三样信息：Hub 地址、一次性加入密钥（启用 TLS 时形如 <b>密钥.指纹</b>）、网络统一的 opencode 密码——获取与设置方式见 kit 内 opencode-mesh/docs/DEPLOY.md「接入节点」。仅把本机当控制端使用可直接跳过。</div>
+      <div class="setupSub">将本机接入 Aoi mesh 网络。需要三样信息：Hub 地址、一次性加入密钥（启用 TLS 时形如 <b>密钥.指纹</b>）、网络统一的 opencode 密码——获取与设置方式见 kit 内 opencode-mesh/docs/DEPLOY.md「接入节点」。入网后即具备全部控制能力。</div>
       <div class="fl"><label>节点名</label><input id="setupName" class="grow" type="text" placeholder="例如 dev-node-2" /></div>
       <div class="fl"><label>Hub 地址</label><input id="setupHubAddr" class="grow" type="text" placeholder="Hub 公网 IP 或域名，例如 1.2.3.4" /><input id="setupHubPort" class="short" type="number" placeholder="18080" title="Hub 注册中心端口（默认 18080）" /></div>
       <div class="fl"><label>加入密钥</label><input id="setupJoinKey" class="grow" type="text" placeholder="一次性密钥（或 密钥.指纹 组合串）" /></div>
@@ -279,7 +284,7 @@
       <div class="fl"><label>agent 端口</label><input id="setupAgentPort" class="short" type="number" placeholder="41999" title="node-agent 控制 API 端口（默认 41999，仅绑定 127.0.0.1，经隧道供控制端使用）" /></div>
       <div class="btns" style="margin-top:10px;">
         <button id="btnSetupStart" class="mini">保存并启动节点</button>
-        <button id="btnSetupSkip" class="mini ghost">仅作为控制端使用</button>
+        <button id="btnSetupSkip" class="mini ghost">稍后配置</button>
       </div>
       <div id="setupOp" class="dim" style="font-size:12px; margin-top:8px; min-height:16px;"></div>
     </div>
@@ -333,8 +338,7 @@
   function switchTab(name) {
     document.querySelectorAll("#tabs .tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
     document.querySelectorAll("[data-tab-content]").forEach((s) => s.classList.toggle("hidden", s.dataset.tabContent !== name));
-    if (name === "network") loadNodeForm();
-    if (name === "control") loadControlTab();
+    if (name === "settings") { loadNodeForm(); loadControlTab(); }
     if (name === "master") loadMasterTab();
   }
 
@@ -444,7 +448,7 @@
     else el.classList.add("hidden");
   }
 
-  /* ---------------- 组网（节点侧） ---------------- */
+  /* ---------------- 设置（节点侧） ---------------- */
   async function loadNodeForm() {
     const r = await ipcRenderer.invoke("mesh:node:get");
     const cfg = r.cfg || {};
@@ -628,11 +632,12 @@
   };
   $("btnAgentLogRefresh").onclick = () => loadAgentLog();
 
-  /* ---------------- 主控 ---------------- */
+  /* ---------------- 设置 · 控制端区块 / 主控 ---------------- */
   async function loadControlTab() {
     await loadCtlFields();
     await refreshVisitorStatus();
     await loadMcpStatus();
+    await loadUpdVersion();
   }
 
   async function loadMasterTab() {
@@ -640,29 +645,25 @@
     await refreshMasterList();
   }
 
-  /** 控制端凭据与 Hub 连接字段（卡片位于「主控」页；与「组网」页双向同步） */
+  /** Hub 连接字段（位于「设置」页；保存时同步到主控配置） */
   async function loadCtlFields() {
     const r = await ipcRenderer.invoke("mesh:node:get");
     const cfg = r.cfg || {};
     $("inpHubAddr").value = cfg.hub?.address || "";
     $("inpHubPort").value = cfg.hub?.port || 18080;
-    const m = (await ipcRenderer.invoke("mesh:master:get")) || {};
-    $("inpFleetPass").value = m.fleetPassword || "";
-    $("inpRegToken").value = m.registry?.adminToken || "";
   }
 
   async function saveMasterForm() {
     const old = (await ipcRenderer.invoke("mesh:master:get")) || {};
     const hubAddr = $("inpHubAddr").value.trim();
-    if (!hubAddr) { setOp("请先在「组网」页填写 Hub 连接", "bad"); return false; }
+    if (!hubAddr) { setOp("请先在「设置」页填写 Hub 连接", "bad"); return false; }
     const cfg = {
       registry: {
         address: hubAddr,
         port: parseInt($("inpHubPort").value, 10) || 18080,
-        adminToken: $("inpRegToken").value.trim() || old.registry?.adminToken || "",
+        adminToken: old.registry?.adminToken || "",
         fingerprint: old.registry?.fingerprint || "",
       },
-      fleetPassword: $("inpFleetPass").value.trim(),
       fleetPasswordEnc: old.fleetPasswordEnc || "",
       opencodeConfigPath: old.opencodeConfigPath || "",
       nodes: old.nodes || {},
@@ -674,9 +675,6 @@
     }
     return true;
   }
-  $("btnCtlSave").onclick = () => withBusy($("btnCtlSave"), "保存中…", async () => {
-    if (await saveMasterForm()) setOp("控制端配置已保存（Hub 已与节点配置同步）", "ok");
-  });
   $("btnHubSave").onclick = () => withBusy($("btnHubSave"), "保存中…", async () => {
     const res = await saveNodeForm();
     if (!res.ok) return;
@@ -711,17 +709,17 @@
   });
   $("btnMasterExport").onclick = () => withBusy($("btnMasterExport"), "导出中…", async () => {
     if (!(await saveMasterForm())) return;
-    if (!confirm("导出控制端配置到剪贴板？\n内容包含凭据（密码级敏感信息），请勿外发。")) return;
+    if (!confirm("导出主控配置到剪贴板？\n内容包含凭据（密码级敏感信息），请勿外发。")) return;
     const r = await ipcRenderer.invoke("mesh:master:export");
     setOp(
       r.ok
-        ? `已导出到剪贴板：Hub ${r.registry}，${r.nodes} 个节点。\n在其他设备的「从剪贴板导入」一键即可成为控制端。`
+        ? `已导出到剪贴板：Hub ${r.registry}，${r.nodes} 个节点。\n可在其他设备的「设置」页「从剪贴板导入」。`
         : `导出失败：${r.error}`,
       r.ok ? "ok" : "bad"
     );
   });
   $("btnMasterImport").onclick = () => withBusy($("btnMasterImport"), "导入中…", async () => {
-    if (!confirm("从剪贴板导入控制端配置？\n将写入本机控制端设置并自动同步节点。")) return;
+    if (!confirm("从剪贴板导入主控配置？\n将写入本机主控设置并自动同步节点。")) return;
     const beforeHub = $("inpHubAddr").value.trim();
     const r = await ipcRenderer.invoke("mesh:master:import");
     if (r.ok) {
@@ -735,7 +733,7 @@
       await refreshMasterList();
       if (beforeHub && r.registry.address !== beforeHub) {
         setOp(
-          `导入成功（${parts.join("，")}）\n注意：Hub 已变更为 ${r.registry.address}，并已同步到本机节点配置；如本机已注册，请到「组网」页「重置身份」后用新加入密钥重新注册。`,
+          `导入成功（${parts.join("，")}）\n注意：Hub 已变更为 ${r.registry.address}，并已同步到本机节点配置；如本机已注册，请到「设置」页「重置身份」后用新加入密钥重新注册。`,
           "warn"
         );
       }
@@ -967,7 +965,7 @@
     await loadMcpStatus();
   });
   $("btnMcpWriteKeep").onclick = () => withBusy($("btnMcpWriteKeep"), "写入中…", async () => {
-    if (!confirm("保留 fleet 条目写入（高级）？\n\n• 写入/更新 node-ctl MCP\n• 保留现有 fleet 条目（其明文密码仍在配置中）\n• 写入前自动备份\n\n完成后需重启 opencode 生效。")) return;
+    if (!confirm("保留 fleet 条目写入？\n\n• 写入/更新 node-ctl MCP\n• 保留现有 fleet 条目（其明文密码仍在配置中）\n• 写入前自动备份\n\n完成后需重启 opencode 生效。")) return;
     const pathTyped = $("inpMcpPath").value.trim();
     renderMcpOp(await ipcRenderer.invoke("mesh:master:mcpWrite", { keepFleet: true, ...(pathTyped ? { path: pathTyped } : {}) }));
     await loadMcpStatus();
@@ -978,6 +976,52 @@
     if (r?.ok) setOp(`MCP 配置已移除（备份：${r.backup || "无"}）；重启 opencode 后生效`, "ok");
     else setOp(`移除失败：${r?.error || "未知错误"}`, "bad");
     await loadMcpStatus();
+  });
+
+  /* ---------------- 应用更新 ---------------- */
+  let updInfo = null;
+  async function loadUpdVersion() {
+    try {
+      const r = await ipcRenderer.invoke("app:update:current");
+      if (r?.ok && !updInfo) {
+        $("updStatus").textContent = `当前版本 v${r.version}（点「检查更新」查询 GitHub 最新版）`;
+      }
+    } catch {}
+  }
+  $("btnUpdCheck").onclick = () => withBusy($("btnUpdCheck"), "检查中…", async () => {
+    $("updStatus").textContent = "正在查询 GitHub…";
+    $("updStatus").className = "dim";
+    const r = await ipcRenderer.invoke("app:update:check");
+    updInfo = r;
+    if (!r?.ok) {
+      $("updStatus").textContent = "检查失败：" + (r?.error || "未知错误");
+      $("updStatus").className = "bad";
+      $("btnUpdApply").disabled = true;
+      return;
+    }
+    if (r.hasUpdate) {
+      $("updStatus").textContent = `发现新版本：v${r.current} → v${r.latest}（${r.tag}${r.sha ? " · " + r.sha.slice(0, 7) : ""}）`;
+      $("updStatus").className = "warn";
+      $("btnUpdApply").disabled = false;
+    } else {
+      $("updStatus").textContent = `当前 v${r.current} 已是最新（远端 ${r.tag}）`;
+      $("updStatus").className = "ok";
+      $("btnUpdApply").disabled = true;
+    }
+  });
+  $("btnUpdApply").onclick = () => withBusy($("btnUpdApply"), "更新中…", async () => {
+    if (!updInfo?.hasUpdate) return;
+    if (!confirm(`从 GitHub 更新到 v${updInfo.latest}？\n\n• 覆盖运行时与界面源码（${updInfo.tag}）\n• 数据文件（节点配置/状态/主控节点表）不受影响\n• 完成后自动重启节点并重载界面`)) return;
+    setOp("正在下载并应用更新…");
+    const r = await ipcRenderer.invoke("app:update:apply", { tag: updInfo.tag });
+    if (!r?.ok) {
+      setOp("更新失败：" + (r?.error || "未知错误"), "bad");
+      return;
+    }
+    setOp(`已更新到 v${r.latest}（覆盖 ${r.files} 个文件），正在重启节点…`, "ok");
+    try { await ipcRenderer.invoke("mesh:node:stop"); } catch {}
+    try { await ipcRenderer.invoke("mesh:node:startFull"); } catch {}
+    setTimeout(() => location.reload(), 1200);
   });
 
   /* ---------------- 首次配置向导 / 退出 ---------------- */
@@ -1012,7 +1056,7 @@
     op.textContent = "已保存，正在启动节点…";
     op.className = "dim";
     const startRes = await ipcRenderer.invoke("mesh:node:start");
-    if (!startRes?.ok) return fail("启动失败：" + (startRes?.error || "未知错误") + "（可到「组网」页查看 agent 日志）");
+    if (!startRes?.ok) return fail("启动失败：" + (startRes?.error || "未知错误") + "（可到「设置」页查看 agent 日志）");
     localStorage.setItem("mesh_setup", "done");
     setOp("首次配置完成：节点已注册启动", "ok");
     op.textContent = "完成：" + (startRes.steps || []).join("；");

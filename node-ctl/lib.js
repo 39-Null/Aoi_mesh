@@ -194,7 +194,7 @@ function loadSecretStore() {
   return _secretStore;
 }
 
-/** 解析共享密码：fleetPasswordEnc（DPAPI/密钥环）→ 解封；兼容旧明文字段 fleetPassword */
+/** 解析共享密码：fleetPasswordEnc（DPAPI/密钥环）→ 解封；兼容旧明文字段 fleetPassword；回退本机节点密码（统一密码网络自动派生） */
 function resolveFleetPassword(config) {
   if (!config) return "";
   if (config.fleetPasswordEnc) {
@@ -206,7 +206,15 @@ function resolveFleetPassword(config) {
       throw new Error("共享密码解密失败：" + (e.message || e) + "（换机/换用户后请重新设置共享密码）");
     }
   }
-  return config.fleetPassword || "";
+  if (config.fleetPassword) return config.fleetPassword;
+  const nodeCfg = readJson(path.join(repoRoot(), "node-agent", "node.json"));
+  const oc = nodeCfg?.opencode || {};
+  try {
+    const store = loadSecretStore();
+    if (oc.passwordEnc && store) return store.unseal(oc.passwordEnc);
+    if (oc.password) return oc.password;
+  } catch {}
+  return "";
 }
 
 /* ==================== opencode-mesh 协议 v1（信封 / 回执 / 派发） ==================== */
@@ -290,7 +298,7 @@ async function dispatchToNode(configPath, config, nodeName, body, opts = {}) {
   const nodeKey = hit.key;
   const node = hit.node;
   const nodeCfg = { ...node, opencodePassword: resolveFleetPassword(config) };
-  if (!nodeCfg.opencodePassword) throw new Error("缺少统一密码（共享密码未设置，请在 App「主控」页设置）");
+  if (!nodeCfg.opencodePassword) throw new Error("缺少统一密码（请在 App「设置」页配置本机节点密码，或从其他控制端导入配置）");
 
   const from = opts.from || "master";
   const task = opts.task || newTaskId("t");

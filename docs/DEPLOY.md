@@ -110,7 +110,7 @@ curl -sk https://127.0.0.1:18080/health                      # HTTPS：返回健
 
 1. **全部设备更新代码**（`git pull`；本批客户端同时支持 HTTP 与钉扎 HTTPS，先更新不会破坏现状）
 2. **Hub 重跑安装脚本**：`sudo bash scripts/hub/install.sh`（自动生成证书并启用 TLS，结尾打印指纹）
-3. **各节点启用钉扎**：到该节点「组网」页，在「加入密钥」中粘贴 `密钥.指纹`（密钥用原来的即可）并保存 → 重启节点；脚本接入的设备更新 `node.json` 的 `hub.fingerprint`（或 `join.sh/join.ps1` 直接粘贴组合串重跑）
+3. **各节点启用钉扎**：到该节点「设置」页，在「加入密钥」中粘贴 `密钥.指纹`（密钥用原来的即可）并保存 → 重启节点；脚本接入的设备更新 `node.json` 的 `hub.fingerprint`（或 `join.sh/join.ps1` 直接粘贴组合串重跑）
 4. **控制端**：「同步节点」重新拉取并写入指纹（或重新执行 `visitors-config`）
 5. 验证：节点在线、派发正常；`npm` 侧如有异常参考第 10 节排查
 
@@ -171,7 +171,7 @@ Hub 服务器的**公网地址**（IP 或域名），默认端口 `18080`。三�
    grep -E '^REGISTRY_FRPS_ADDR=|^REGISTRY_PORT=' /etc/opencode-mesh/registry.env
    ```
    （`REGISTRY_FRPS_ADDR` 即对外可用的地址）
-3. **任一已入网设备**：打开 App →「组网」页 →「Hub 连接」区域，地址与端口即为所求
+3. **任一已入网设备**：打开 App →「设置」页 →「Hub 连接」区域，地址与端口即为所求
 
 #### ② 加入密钥
 
@@ -182,7 +182,7 @@ Hub 服务器的**公网地址**（IP 或域名），默认端口 `18080`。三�
 - **规则**：全网所有节点使用**同一个**密码（≥8 位）。它保护每台设备上的 opencode API——派发任务、读取会话都需通过它认证
 - **全新网络（第一台设备）**：由**你自己设定**一个强密码（向导会要求必填，不再自动生成）
 - **加入既有网络**：向网络管理员（或任一已入网设备的操作者）索取**现有统一密码**并如实填写；填错会导致从控制端派发任务时 401
-- **修改**：任一已入网设备 →「组网」页 →「opencode」行 **⚙ 修改密码**（需先输入原密码验证；多节点网络请逐台同步修改）
+- **修改**：任一已入网设备 →「设置」页 →「opencode」行 **⚙ 修改密码**（需先输入原密码验证；多节点网络请逐台同步修改）
 
 #### 其他前置
 
@@ -192,7 +192,7 @@ Hub 服务器的**公网地址**（IP 或域名），默认端口 `18080`。三�
 
 ### 4.2 方式 A：App（图形界面，推荐）
 
-1. 按 §7 安装并启动 App；未配置设备会**自动弹出首次配置向导**（曾跳过则进「组网」页填写）
+1. 按 §7 安装并启动 App；未配置设备会**自动弹出首次配置向导**（点过「稍后配置」则到「设置」页填写）
 2. 按 §6 字段说明依次填写：节点名、Hub 地址 / 端口、加入密钥、opencode 端口与密码、agent 端口
 3. 点击「保存并启动节点」
 4. 「节点状态」应显示 `agent 运行中（PID …）· 已注册（stcp …）`
@@ -258,7 +258,7 @@ WantedBy=multi-user.target
 
 ### 5.1 App
 
-1. 「组网」页填写一次 Hub 连接（与「主控」页双写同步）
+1. 「设置」页填写一次 Hub 连接（同时写入主控配置）
 2. 「主控」页 →「同步节点（自动配置）」：从 registry 拉取节点、自动生成并启动隧道（visitor 全自动运行）
 3. 节点卡片即可启动 / 停止 / 重启各节点 opencode；本机回环端口按分配结果（自 `14100` 起）自动绑定
 
@@ -271,26 +271,26 @@ node node-ctl/cli.js start|stop|restart <node>
 node node-ctl/cli.js dispatch <node> "任务内容"   # 按消息协议派发（信封+回执）
 ```
 
-配置为 `node-ctl/nodes.json`（含 Hub 连接与节点凭据；可用 App「导出到剪贴板 / 从剪贴板导入」在控制端之间迁移）。
+配置为 `node-ctl/nodes.json`（含 Hub 连接与节点凭据；可用 App「设置」页「导出到剪贴板 / 从剪贴板导入」在设备间迁移）。
 
 ### 5.3 opencode 集成（fleet / node-ctl MCP）
 
-- 主控 App「主控」页可生成 fleet MCP 配置片段；将其写入主控 opencode 配置的 `mcp` 字段即可在 opencode 内直接编排多节点（配置字段格式以 [opencode 官方文档](https://opencode.ai/docs/) 为准）
+- 主控 App「主控」页可生成 fleet MCP 配置片段；更推荐用「设置」页「MCP 集成」一键写入 node-ctl（见 §5.5），在 opencode 内直接编排多节点（配置字段格式以 [opencode 官方文档](https://opencode.ai/docs/) 为准）
 - 设备间任务遵循 [消息协议 v1](PROTOCOL.md)；各节点需加载协作约定文件（`configs/agent-mesh-instructions.md`）
 
 ### 5.4 Telegram（可选）
 
 1. 在 Telegram 中找 **@BotFather** → `/newbot` → 按提示取名 → 得到 bot token
-2. App「本机」页 →「Token 轮换」→ 粘贴 token →「更新并重启」
+2. App「设置」页 →「Bot Token 轮换」→ 粘贴 token →「更新并重启」
 3. Bot 配置与日志位于 `%APPDATA%\opencode-telegram-bot\`（Windows）；网络环境需要代理时，在同一目录 `.env` 中配置 `TELEGRAM_PROXY_URL`（App 本机页「代理」行显示其连通状态）
 4. 如 token 曾外露：BotFather `/revoke` 换新，再回到第 2 步
 5. 手机使用：向 Bot 发消息 → 由控制端 opencode 处理 → 经 MCP / CLI 下发到目标节点 → 回执返回
 
-### 5.5 MCP 集成（主控必备，一键写入）
+### 5.5 MCP 集成
 
 > **只配主控**：纯节点设备**无需任何 MCP**（节点的 opencode 只"被派发"）。只有当某台设备需要"用它的 opencode 指挥其它设备"（主控 / 控制端 / Telegram Bot 所在设备）时，才需要接入 MCP。
 
-App「主控」页内置 **MCP 集成** 卡片，步骤：
+App「设置」页内置 **MCP 集成** 卡片，步骤：
 
 1. 先点「同步节点（自动配置）」
 2. 点 **「写入/更新 MCP 配置」**——自动定位本机 opencode 配置（`$OPENCODE_CONFIG` → `~/.config/opencode/opencode.jsonc`），**保注释、保格式**地写入 `mcp.node-ctl`；写入前自动备份（`*.mesh-bak-<时间>`），校验失败自动回滚
@@ -308,7 +308,7 @@ App「主控」页内置 **MCP 集成** 卡片，步骤：
 | 能力 | 13 个工具：派发/回执、会话浏览、消息读取、权限列表与审批、中断、生命周期、健康检查 | 与其能力面重叠（独有 SSE 低延迟状态缓存，差异仅在毫秒级读延迟） |
 | 维护 | 随项目版本走 | 上游独立演进 |
 
-结论：**默认只写 node-ctl**，写入时自动移除旧 `fleet` 条目（含明文密码）；确有需要的用户可点「保留 fleet 写入」（高级）。
+结论：**默认只写 node-ctl**，写入时自动移除旧 `fleet` 条目（含明文密码）；确有需要的用户可点「保留 fleet 写入」。
 
 **版本迭代与配置漂移（注意事项）**：
 
@@ -318,9 +318,9 @@ App「主控」页内置 **MCP 集成** 卡片，步骤：
 - **幂等与备份**：重复写入无额外改动；每次写入前生成时间戳备份，需要回退时把 `*.mesh-bak-*` 改名恢复即可
 - **合并链覆盖**：若使用项目级 `opencode.json` 或企业托管配置且定义了同名键，可能覆盖全局写入——此时请按 [node-ctl/README](../node-ctl/README.md) 手工合并
 
-## 6. 配置字段详解（App 逐项教学）
+## 6. 配置字段详解
 
-> 本节覆盖首次向导与「组网」「本机」页出现的**全部可填写字段**。按顺序照做即可完成入网。
+> 本节覆盖首次向导与「设置」页出现的**全部可填写字段**。按顺序照做即可完成入网。
 
 ### 6.1 节点身份与接入
 
@@ -340,20 +340,22 @@ App「主控」页内置 **MCP 集成** 卡片，步骤：
 | **agent 端口** | node-agent 受控 API 端口（仅本机回环，经隧道供控制端访问） | 保持默认 | `41999` | 与 opencode 端口或其他服务冲突 |
 | **frpc 路径** | 节点隧道转发程序 | 留空 = 自动在 `node-agent/bin/` 查找（推荐）；也可填绝对路径 | `bin/frpc.exe` | 文件缺失：脚本 / 向导会自动获取，受限网络按 §4.1 手动放置 |
 
-> 多节点建议：各节点 opencode 密码**统一为同一个**（控制端编排使用同一密码访问所有节点；见下方「共享密码」）。修改密码时请逐节点同步修改，并按需更新控制端「共享密码」。
+> 多节点建议：各节点 opencode 密码**统一为同一个**（控制端编排使用同一密码访问所有节点；派发密码自动派生自本机节点密码，无需手工配置）。修改密码时请逐节点同步修改即可。
 
-### 6.3 控制端凭据（可选；位于「主控」页）
+### 6.3 控制端配置备份（导出 / 导入）
+
+控制端所需凭据全部自动派生（注册表操作走本机节点凭据、派发密码取本机节点密码），日常无需手工填写；以下操作仅用于**备份或迁移到新设备**（位于「设置」页「控制端配置备份」卡片）：
+
+| 操作 | 说明 |
+| --- | --- |
+| **导出到剪贴板** | 把 Hub 连接、节点表与凭据打包到剪贴板——**含密码级敏感信息，请勿外发** |
+| **从剪贴板导入** | 在新设备粘贴导入：写入控制端配置、自动同步节点；适合双控制端或更换设备 |
+
+### 6.4 Bot Token 轮换（「设置」页）
 
 | 字段 | 是什么 | 怎么填 | 示例 / 默认 | 常见错误 |
 | --- | --- | --- | --- | --- |
-| **共享密码** | 编排派发用的统一 opencode 密码 | 与各节点 opencode 密码一致；留空则取本机节点密码 | 与节点密码相同 | 与节点实际密码不符 → 派发 401 |
-| **管理密钥（所有者密钥）** | 兼容旧管理方式的 Hub 所有者密钥 | 平权模型下通常**留空**（使用本机节点凭据） | 留空 | 一般无需填写 |
-
-### 6.4 本机页（远程连接）
-
-| 字段 | 是什么 | 怎么填 | 示例 / 默认 | 常见错误 |
-| --- | --- | --- | --- | --- |
-| **Token 轮换（Bot token）** | Telegram Bot 凭据 | 按 §5.4 从 @BotFather 获取；粘贴后「更新并重启」 | `123456:ABC-…` | token 泄露务必 `/revoke` 后轮换 |
+| **Bot Token 轮换** | Telegram Bot 凭据 | 按 §5.4 从 @BotFather 获取；粘贴后「更新并重启」 | `123456:ABC-…` | token 泄露务必 `/revoke` 后轮换 |
 
 ### 6.5 端口与默认值（为什么是这些默认值）
 
@@ -362,8 +364,8 @@ App「主控」页内置 **MCP 集成** 卡片，步骤：
 | 注册中心 registry | Hub | `18080` | 高端非常用端口：避开 Web（80/8080）及常见服务；公网入向仅此端口与 frp 控制口，非常用端口降低被扫描命中的概率 | Hub 重跑 `install.sh` 前设置 `REGISTRY_PORT` |
 | frp 控制口 frps | Hub | `17000` | frp 官方默认控制口是 7000，易与其它 frp 实例/既有服务冲突；本项目取 17000（17k 段极少占用） | 同 `FRPS_PORT`（重跑 install.sh） |
 | 主控侧隧道回环口 | 控制端本机 | `14100–19998` 区间内按节点自动分配（每节点 2 个） | ① 仅在控制端 `127.0.0.1` 使用，不占公网；② 区间大（≈5900 个）可支持较多节点；③ 避开常用服务端口段 | Hub：`REGISTRY_PORT_START/END` |
-| opencode serve | 节点 | `4096` | opencode 生态的常用默认端口，保留默认便于跨设备统一与排障 | 向导 /「组网」页「opencode 端口」（冲突时换空闲端口） |
-| node-agent 控制 API | 节点 | `41999` | ① 只绑定 `127.0.0.1`，经 stcp 隧道供控制端按 token 调用，不向公网暴露；② 取 41xxx 高端不常见端口，几乎不与其它软件冲突；③ 与 opencode 端口分离，职责清晰 | 向导 /「组网」页「agent 端口」 |
+| opencode serve | 节点 | `4096` | opencode 生态的常用默认端口，保留默认便于跨设备统一与排障 | 向导 /「设置」页「opencode 端口」（冲突时换空闲端口） |
+| node-agent 控制 API | 节点 | `41999` | ① 只绑定 `127.0.0.1`，经 stcp 隧道供控制端按 token 调用，不向公网暴露；② 取 41xxx 高端不常见端口，几乎不与其它软件冲突；③ 与 opencode 端口分离，职责清晰 | 向导 /「设置」页「agent 端口」 |
 | Hub SSH | Hub | `22` | 系统默认；仅运维使用，建议按安全清单加固（禁密码登录/禁 root 直登） | sshd 配置（按需） |
 
 > 端口冲突处理：opencode / agent 端口冲突 → 换一个空闲端口（1024–65535）；Hub 端口冲突 → 改 `REGISTRY_PORT`/`FRPS_PORT` 后重跑 `install.sh`（幂等，数据保留）。
@@ -381,7 +383,7 @@ cd node-app; npm install; npm start
 ```
 
 3. （可选）快捷启动别名：将 `scripts\aliases\opencode-mesh.cmd` 复制到 `%APPDATA%\npm\`，之后任意位置输入 `opencode-mesh` 启动
-4. 首次启动会弹出「快速配置」向导（见 §6）；仅当控制端用则点「仅作为控制端使用」
+4. 首次启动会弹出「快速配置」向导（见 §6）；暂不配置可点「稍后配置」，之后在「设置」页完成
 
 ### 7.2 Linux（便携包 / 源码）
 
@@ -410,14 +412,14 @@ setx OPENCODE_MESH_ROOT "C:\path\to\opencode-mesh"
 
 ### 8.1 节点退网（在节点设备上）
 
-1. App →「组网」页 →「停止节点」（或直接「重置身份」以清除本机注册状态）
+1. App →「设置」页 →「停止节点」（或直接「重置身份」以清除本机注册状态）
 2. 在任一已入网设备 / Hub 上吊销该节点：`POST /admin/revoke`（凭节点凭据或所有者密钥）
 3. 关闭开机自启（如配置）：删除启动文件夹中的相关文件（§7.4）
 4. 如需彻底清除本地痕迹：删除 `node-agent/data/` 与 `node-agent/node.json`
 
 ### 8.2 控制端移除
 
-1. App →「主控」页 →「停用隧道」
+1. App →「设置」页 →「停用隧道」
 2. 删除 `node-ctl/nodes.json` 与 `node-ctl/visitors.toml`（即清空本地凭据）
 
 ### 8.3 Hub 卸载（公网服务器）
@@ -443,9 +445,45 @@ rm -rf /opt/opencode-mesh /etc/opencode-mesh /var/log/opencode-mesh
 | 组件 | 操作 |
 | --- | --- |
 | Hub | `git pull` 后重跑 `sudo bash scripts/hub/install.sh`（幂等，密钥 / 数据保留） |
-| 节点 | 更新代码 / 便携包 → App 的「停止节点」→「启动节点」（agent 自动使用新版本）；headless 节点重启 agent 进程 |
-| 协作约定 | 各节点 `git pull` 更新 `configs/agent-mesh-instructions.md` 后，重启节点 opencode 会话使其生效 |
-| 控制端 | `git pull`；依赖有变时在 `node-app` 重跑 `npm install`；重启 App 或 CLI |
+
+### 9.1 开发版（源码 clone）
+
+> 数据文件（`node-agent/node.json`、`node-agent/data/`、`node-ctl/nodes.json`）不在 git 跟踪范围内：pull 不触碰、新代码按原路径读取。
+
+```powershell
+# 1. 处理本地改动（保证可快进合并）
+git status --short
+git add -A; git commit -m "checkpoint"     # 或 git stash push -u
+
+# 2. 拉取（--ff-only 避免意外的合并提交）
+git pull --ff-only
+
+# 3. 仅当 node-app/package.json 有变化时需要（幂等，多跑无妨）
+cd node-app; npm install
+
+# 4. 重启 App（托盘退出 → 重新启动）
+npm start
+```
+
+- 必须**整 App 重启**（`mesh-core.js` 为主进程代码）；agent 与隧道随 App 退出/启动自动重建
+- 冲突锦囊：`git stash` → pull → `git stash pop`；真冲突按 Git 提示手动合并
+- 服务器（headless 节点）：`git pull` 后重启 agent 进程即可
+- 注意：开发环境检测到 `.git`，应用内「立即更新」会提示改用 git pull（两条通道互斥、语义一致）
+
+### 9.2 发行版（便携包）
+
+**应用内一键更新（推荐）**：App「设置」页 →「应用」→「版本与更新」→「检查更新」→「立即更新」——从 GitHub 拉取最新源码（运行时 + 界面）并覆盖，**数据文件不受影响**；完成后自动重启节点并重载界面。
+
+- **引导期（v1.3.0 → v1.4.0）**：需手动安装一次新 kit——推荐**同目录覆盖**（把新包的 `app/` 与 `opencode-mesh/` 复制进旧目录），或把旧目录的 `node-agent/node.json`、`node-agent/data/`、`node-ctl/nodes.json` 拷贝到新目录。此后版本均可在应用内更新
+- **涉及 Electron 壳（`app/`）变更的版本**：按发布说明下载新版 kit，覆盖 `app/`（不会触碰数据文件）
+- 覆盖范围说明：更新只写代码文件（`node-agent/*.js`、`node-ctl/*.js`、`scripts/`、`docs/`、`node-app/` 界面源码等），不触碰节点配置/状态/主控节点表/隧道配置
+- 网络受限环境：优先走系统代理；失败自动回退 `curl` + Bot 的 `TELEGRAM_PROXY_URL` 代理配置
+
+| 组件 | 操作（发行版） |
+| --- | --- |
+| 运行时 + 界面 | 应用内「立即更新」（或手动覆盖 `opencode-mesh/` 文件夹） |
+| 协作约定 | 随应用内更新一并拉取（`configs/agent-mesh-instructions.md`），重启节点 opencode 会话后生效 |
+| Electron 壳 | 仅壳变化的版本：下载新 kit 覆盖 `app/` |
 
 ## 10. 故障排查
 
@@ -458,11 +496,11 @@ rm -rf /opt/opencode-mesh /etc/opencode-mesh /var/log/opencode-mesh
 | 改名后如何生效 | 保存后重启节点即自动同步显示名（注册 id 不变、无需新密钥）；控制端「同步节点」刷新列表 |
 | 退出 App 后注册表未立即离线 | 需新版 Hub（含 `POST /offline`）；升级 Hub 后即时生效，旧版退化为约 150 秒心跳超时 |
 | 退出 App 后节点仍在线 | 本机 App 版本较旧（旧版退出不清理进程）；升级后「退出 = 节点下线、关窗 = 托盘常驻」 |
-| 节点`在线`但不可达 | agent 是否运行 → agent 日志（组网页）→ frpc 是否拉起；Hub 的 frps 是否 active |
+| 节点`在线`但不可达 | agent 是否运行 → agent 日志（「设置」页）→ frpc 是否拉起；Hub 的 frps 是否 active |
 | frpc 自动获取失败 | 网络受限：手动下载 [frp releases](https://github.com/fatedier/frp/releases)，把 frpc / frpc.exe 放入 `node-agent/bin/`，或脚本加 `-FrpLocalZip` / `--frp-local-zip` 重跑 |
 | 修改 opencode 密码未生效 | 保存时按其提示重启本机 opencode；远程节点到主控页重启对应节点 |
 | 控制端同步后端口不通 | 重新「同步节点」（自动清理并更新隧道）；检查回环端口占用（`14100+` 段） |
-| Hub 更换地址后节点失联 | 各节点在「组网」页更新 Hub 地址并重启节点；控制端重新同步 |
+| Hub 更换地址后节点失联 | 各节点在「设置」页更新 Hub 地址并重启节点；控制端重新同步 |
 | 手机端无响应 | 确认 Bot 所在控制端的 opencode（如 `4096`）在运行、Bot 进程存活（本机页状态卡） |
 | `findRepoRoot` 报找不到仓库 | 用便携包 `start-app.sh` 启动，或设置环境变量 `OPENCODE_MESH_ROOT` 指向仓库根目录 |
 
