@@ -1,7 +1,7 @@
 # opencode-mesh · 设计文档
 
-- 版本：v0.14
-- 状态：P4 已验收（跨设备派发闭环）；消息协议 v1 已随项目更名（新标记 `[opencode-mesh ...]`，兼容旧 `[aoi-mesh ...]`）；id 身份模型与隧道自动化定稿；安全加固 + 凭据加密存储落地；向导严谨化；MCP 集成一等化（node-ctl 13 工具 + App 一键写入）
+- 版本：v0.15
+- 状态：P4 已验收（跨设备派发闭环）；消息协议 v1 已随项目更名（新标记 `[opencode-mesh ...]`，兼容旧 `[aoi-mesh ...]`）；id 身份模型与隧道自动化定稿；安全加固 + 凭据加密存储落地；向导严谨化；MCP 集成一等化（node-ctl 13 工具 + App 一键写入）；前端三页职责重构，文档统一 opencode-mesh 命名
 - 许可：MIT
 
 ---
@@ -13,15 +13,16 @@
 - v0.2.1 → v0.3：**平权管理模型**（任意注册节点可管理/邀请/吊销，所有者密钥兼容保留）；App 信息架构重组（配置归「组网」、操作归「主控」、Hub 连接单点双写）；新增「生成加入密钥」；Linux 便携包与仓库定位增强（findRepoRoot）
 - v0.3 → v0.4：**消息协议 v1**（信封 + 回执 + 澄清块，含宽松回退解析；详见 PROTOCOL.md）；节点改名自动适配（注册状态记录名称，检测不一致自动重新注册并给出指引）；移除「生成加入密钥」按钮（改为脚本/接口手动处理）；界面所有可展开区域支持折叠；「同步节点」自动清理失效节点并自动更新/重启隧道；文档体系规范化（README 重写 + 部署/使用文档）
 - v0.4 → v0.5：**身份模型定稿**——节点名是可变标签（全网唯一），注册 token 是不可变的唯一身份；registry 新增 `POST /rename`（改名自动迁移：保留 token / stcp 密钥 / 端口分配，加入密钥归属跟随；重名拒绝），agent 启动时自动迁移或确认名称（幂等；兼容旧状态与旧版 Hub 回退）；**隧道全自动运行**——按需自动生成/启动/更新（同步节点自动刷新重启、App 启动自动拉起），手动停用状态持久化，隧道卡片收敛为「开关 + 日志」
-- v0.5 → v0.6：**id 身份模型落地**——registry 以**不可变注册 id**（=首次注册名，如 `dev-node-1`）为键，名称（name）为任意可改的显示标签（全网唯一）；`/register` 同密钥恢复并同步显示名、新注册重名 409（修复同名冒领 token 隐患）；心跳/管理按 token 定位；frp 代理名与 visitors 全部改用 id（改名零影响隧道）；App「组网」页新增注册 id 展示（固定灰字）、节点名可编辑；「主控」节点列表改为卡片式（名称+在线徽标+id+端口/隧道信息+操作）；初始窗口加宽至 620
+- v0.5 → v0.6：**id 身份模型落地**——registry 以**不可变注册 id**（=首次注册名，如 `node-a`）为键，名称（name）为任意可改的显示标签（全网唯一）；`/register` 同密钥恢复并同步显示名、新注册重名 409（修复同名冒领 token 隐患）；心跳/管理按 token 定位；frp 代理名与 visitors 全部改用 id（改名零影响隧道）；App「组网」页新增注册 id 展示（固定灰字）、节点名可编辑；「主控」节点列表改为卡片式（名称+在线徽标+id+端口/隧道信息+操作）；初始窗口加宽至 620
 - v0.6 → v0.7：**首次使用向导**（未配置时自动弹出快速配置；可跳过为纯控制端）；**托盘常驻**——关闭窗口=最小化到系统托盘（首次气泡提示、托盘菜单含显示/退出）、单实例锁（重复启动唤起已有窗口）、「本机」页新增退出按钮；明确生命周期语义：agent 与 frpc 为独立进程，注册与隧道不依赖 App，退出 App 不影响外部设备连接本机
 - v0.7 → v0.8：**进程生命周期直连化**——本地 agent / visitor 的发现与停止由 netstat 端口探测改为 **PID 记账（pidfile）+ 存活检测（kill(pid,0)）+ cmdline 身份校验**，端口仅作为服务配置值；killTree 在 Linux 改为进程组回收（消除孤儿）；agent 自证 pidfile 且优雅退出补杀 opencode；**App 打开 = 强制启动本机节点与隧道，App 退出 = 停止两者并直报 Hub 离线**（registry 新增 `POST /offline`，在线→离线即时生效；注册记录保留、其他节点不受影响）；关窗仍为托盘最小化
-- v0.8 → v0.9：**命名统一与部署文档重构**——文档与代码统一使用 **opencode-mesh**（功能性名称），界面展示名保留 **Aoi mesh**（窗口标题 / 托盘 / 向导）；消息协议标记更名 `[opencode-mesh v1]` 系列（解析端与协作约定兼容旧 `[aoi-mesh ...]`）；DEPLOY.md 重构——架构与数据流、App 安装/卸载引导、配置字段逐项教学、opencode 相关配置改为官方文档外链；新增 Linux 节点接入脚本（`scripts/node/join.sh`）与 frpc 自动获取
+- v0.8 → v0.9：**命名统一与部署文档重构**——文档与代码统一使用 **opencode-mesh**（功能性名称），界面展示名保留原有美化形式（窗口标题 / 托盘 / 向导）；消息协议标记更名 `[opencode-mesh v1]` 系列（解析端与协作约定兼容旧 `[aoi-mesh ...]`）；DEPLOY.md 重构——架构与数据流、App 安装/卸载引导、配置字段逐项教学、opencode 相关配置改为官方文档外链；新增 Linux 节点接入脚本（`scripts/node/join.sh`）与 frpc 自动获取
 - v0.9 → v0.10：**密码修改流程重构**——「组网」页内联密码输入移除，改为「opencode」行 **⚙ 齿轮弹窗**；修改需先输入**原密码（网络共用密码）验证确认**——比对发生在**节点本机**（mesh-core 与 node.json 现值比对，主进程内完成），Hub 不存密码/指纹；通过后写入配置，agent 运行中经本机回环立即重启 opencode 生效；新密码最少 8 位、与原密码相同将被拒绝
 - v0.10 → v0.11：**统一安全加固批次**——`/register` 修复原型链绕过（keys/nodes 改无原型对象 + 自有属性校验 + 密钥格式白名单）；registry 启用**自签 TLS + 客户端指纹钉扎**（指纹随加入密钥以 `密钥.指纹` 组合串分发；握手完成、发送数据前校验，防中间人）；加入密钥默认 72h TTL；审计日志（注册/吊销/改名/密钥签发/鉴权失败）；Hub 服务降权为非 root 专用用户；agent token 恒时比较、opencode 显式 `--hostname 127.0.0.1`；敏感文件（node.json/state.json/nodes.json/visitors.toml/frpc.toml/data.json/audit.log）权限收紧（chmod 600 / Windows icacls）
 - v0.11 → v0.12：**凭据加密存储与改密内置化**——新增 `secret-store`（Windows DPAPI / Linux 密钥环 / 600 权限回退）；node.json 明文密码启动时自动迁移为 `passwordEnc`；改密校验下沉到 agent（`POST /opencode/password`，App/脚本不再读取密码值）；主控共享密码 `fleetPasswordEnc` 加密落盘、导出解封/导入封存；node-ctl 新增 `node_dispatch` MCP（加密存储取密，替代 fleet 明文 `--password` 路径）；全网统一密码完成轮换
 - v0.12 → v0.13：**向导严谨化与操作文档重构**——首次配置向导密码改为**必填**（≥8 位；取消静默自动生成，杜绝"密码不可知"；加入既有网络须填全网统一密码）；「组网」页保存不再静默生成密码（凭据缺失时引导回向导）；join.ps1/join.sh 新增 `-OpencodePassword/--oc-password`（省略时生成并告警）；DEPLOY 重构为逐步操作手册（Hub 地址三种来源、加入密钥两条路径逐条命令、密码规则与设置步骤），新增「端口与默认值（来历与理由）」章节；Windows 便携包 v1.2.1
 - v0.13 → v0.14：**MCP 集成一等化**——node-ctl MCP 补齐为 13 个工具（新增健康检查/会话浏览/会话消息/权限列表与审批/中断/会话重置，能力面覆盖并替代 fleet，凭据经加密存储解封、无明文）；App「主控」页新增 **MCP 集成卡片**（自动定位 opencode 配置 + 手动路径兜底 + 保格式写入（jsonc-parser，唯一运行时依赖）+ 备份回滚 + 路径漂移一键修复 + 移除；默认仅写 node-ctl 并迁移移除 fleet 明文条目）；docs 增补「版本迭代与配置漂移」注意事项；fleet 降级为高级可选
+- v0.14 → v0.15：**前端三页职责重构与文档规范化**——「控制端凭据」从「组网」页移入「主控」页（组网=节点侧：Hub 连接/身份/端口/启停；主控=控制端侧：凭据/节点管理/隧道/MCP 集成；本机=运行状态），三页页首增加职责范围说明；fleet 卡片标注「高级/兼容」并后置；文档全面采用 **opencode-mesh** 命名（界面展示名仅在 App 内保留）；启动别名更名为 `opencode-mesh.cmd/sh`；文档清理面向公开仓库（不含设备/环境专属信息），发布渠道聚焦便携包与 Release
 
 ## 1. 定位与设计原则
 
@@ -196,14 +197,15 @@ enabled = false
 
 ## 7. 编排层
 
-- **opencode-fleet**（现成 MCP）：
-  - `fleet_send_message` 异步派发（fire-and-forget）→ `fleet_get_session_status` 轮询 → `fleet_get_session_messages` 回收结果
-  - `fleet_reply_permission` 远程批准/拒绝节点权限请求
-- **NodeCtl**（自研小件）：
-  - `node_opencode_start / stop / restart / status`、`node_list`
-  - 形式：MCP（主控 opencode 原生调用）或 CLI（零依赖）
-  - 另含 `visitors-config`：从 registry 拉取节点与 stcp 密钥，生成主控侧 frpc visitor 配置
-- 典型手机流程：Telegram → 主控 opencode → NodeCtl 启动节点 → fleet 派发 → 汇总回复
+- **node-ctl MCP**（自研，主控默认接入；13 个工具）：
+  - 节点面：`node_list` / `node_health` / `node_status` / `node_opencode_start|stop|restart`
+  - 任务面：`node_dispatch`（信封 + 回执解析，密码经加密存储解封）
+  - 会话面：`node_list_sessions` / `node_session_messages` / `node_interrupt` / `node_reset`
+  - 审批面：`node_permissions` / `node_reply_permission`
+  - 接入方式：App「主控」页 **MCP 集成卡片**一键写入（保格式 + 备份回滚 + 路径修复）；或手工写入 opencode 配置（见 node-ctl/README.md）
+- **opencode-fleet**（第三方，高级/兼容选项）：其能力面已被 node-ctl MCP 覆盖；仅当需要其 SSE 低延迟状态缓存时手动启用
+- CLI：`node node-ctl/cli.js <命令>`（零依赖；list / start / stop / restart / dispatch / fleet-config / visitors-config）
+- 典型手机流程：Telegram → 主控 opencode → `node_opencode_start` 启动节点 → `node_dispatch` 派发 → 汇总回复
 
 ## 8. 安全设计
 
@@ -247,33 +249,22 @@ NetworkProvider 接口：
 | --- | --- | --- |
 | P0 | 设计冻结（本文档）+ 仓库重构为 opencode-mesh | ✅ |
 | P1 | node-app v1.1：本机管理面板（诊断 / 日志 / Token 轮换 / 图标 / 设备卡片布局） | ✅ |
-| P2 | frp PoC + node agent + NodeCtl（CLI/MCP，本地端到端验证） | ✅ |
-| P3 | Hub 安装脚本 + 阿里云实机部署 + stcp 零暴露改造（公网全链路验证） | ✅ |
-| P4 | 编排集成（fleet）+ 第二节点 join 验收（手机全链路） | ⏳ |
-| P5 | Linux 节点支持 + 开源化（README / LICENSE / CI） | ⏳ |
+| P2 | frp PoC + node agent + node-ctl（CLI/MCP，本地端到端验证） | ✅ |
+| P3 | Hub 安装脚本 + stcp 零暴露改造（公网全链路验证） | ✅ |
+| P4 | 编排集成（MCP）+ 第二节点 join 验收（手机全链路） | ✅ |
+| P5 | Linux 节点支持 + 开源化（README / LICENSE / CI） | ⏳（CI 待补） |
+| P6 | Windows 便携包与版本发布、手机端实测、更多平台适配 | 🚧 |
 
 ## 12. 开放问题
 
-- LICENSE 文件在 P5 补齐（MIT）
-- Hub 的 Docker 部署作为 P5 可选交付
-- 多主控场景的冲突策略（同一节点被两个主控派发）在 P4 讨论
-- 主控侧 visitor 进程的常驻管理（自动启动/看护）随 P4 的 App 化一并处理
+- Hub 的 Docker 部署作为可选交付形态
+- 多主控场景的冲突策略（同一节点被两个主控派发）
+- （后置）纯控制端免系统 Node 依赖（ELECTRON_RUN_AS_NODE）
+- （后置）合并链覆盖（项目级/托管 opencode 配置）的排查指引
 
 ---
 
-## 附录 A · 参考部署环境
-
-> 供运维参考，不含任何密钥。
-
-- 参考 Hub：Alibaba Cloud Linux 3，frps(17000) + registry(18080)，systemd 单元 `opencode-mesh-frps` / `opencode-mesh-registry`
-- 节点 App 位置：`node-app/`（Electron 44.7.1，Node.js 22.23.2）
-- 节点 agent：`node-agent/`（配置 `node.json`，状态 `data/state.json`，日志 `data/agent.log`）
-- bot 配置与日志目录：`%APPDATA%\opencode-telegram-bot\`（`.env`、`logs/`、`settings.json`）
-- 开机自启：`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\opencode-telegram-bot.vbs`
-- 桌面快捷方式：`opencode-mesh 节点.lnk`
-- opencode serve 端口：`4096`（本机回环）
-
-## 附录 B · 术语对照（中英）
+## 附录 A · 术语对照（中英）
 
 | 中文 | 英文 | 说明 |
 | --- | --- | --- |

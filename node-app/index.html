@@ -102,6 +102,7 @@
 
   <!-- ======================= 本机 ======================= -->
   <section data-tab-content="local">
+    <div class="dim" style="font-size:12px; margin-bottom:8px;">本机运行状态与诊断（opencode 服务 / 远程连接 / 日志 / Token）</div>
     <header>
       <span id="dot"></span>
       <div>
@@ -152,6 +153,7 @@
 
   <!-- ======================= 组网 ======================= -->
   <section data-tab-content="network" class="hidden">
+    <div class="dim" style="font-size:12px; margin-bottom:8px;">把本机加入网络：Hub 连接、节点身份、端口与密码、节点启停</div>
     <section class="card">
       <div class="cardTitle">Hub 连接 <span class="dim">（本机节点与控制端共用，保存会同步两处）</span></div>
       <div class="fl"><label>Hub 地址</label><input id="inpHubAddr" class="grow" type="text" placeholder="例如 hub.example.com 或 1.2.3.4" /><input id="inpHubPort" class="short" type="number" placeholder="18080" /></div>
@@ -178,20 +180,6 @@
     </section>
 
     <section class="card">
-      <div class="cardTitle">控制端（可选） <span class="dim">（平权模式：注册后即可管理/邀请其他设备，通常无需密钥）</span></div>
-      <div class="fl"><label>共享密码</label><input id="inpFleetPass" class="grow" type="password" placeholder="各节点统一的 opencode 密码" /></div>
-      <details>
-        <summary class="dim" style="cursor:pointer; font-size:12px; padding:4px 0;">高级：所有者密钥</summary>
-        <div class="fl"><label>管理密钥</label><input id="inpRegToken" class="grow" type="password" placeholder="可留空" /></div>
-      </details>
-      <div class="btns" style="margin-top:8px; margin-bottom:0;">
-        <button id="btnCtlSave" class="mini">保存</button>
-        <button id="btnMasterExport" class="mini ghost" title="把控制端配置打包到剪贴板，用于快速配置其他控制端">导出到剪贴板</button>
-        <button id="btnMasterImport" class="mini ghost" title="从剪贴板导入控制端配置并自动同步（多控制端一键就绪）">从剪贴板导入</button>
-      </div>
-    </section>
-
-    <section class="card">
       <div class="cardTitle">节点状态</div>
       <div id="nodeState" class="dim">…</div>
     </section>
@@ -209,6 +197,22 @@
 
   <!-- ======================= 主控 ======================= -->
   <section data-tab-content="master" class="hidden">
+    <div class="dim" style="font-size:12px; margin-bottom:8px;">控制端（主控）范围：节点管理、隧道、MCP 集成与控制端凭据</div>
+
+    <section class="card">
+      <div class="cardTitle">控制端凭据（可选） <span class="dim">（平权模式：注册后即可管理/邀请其他设备，通常无需密钥）</span></div>
+      <div class="fl"><label>共享密码</label><input id="inpFleetPass" class="grow" type="password" placeholder="各节点统一的 opencode 密码" /></div>
+      <details>
+        <summary class="dim" style="cursor:pointer; font-size:12px; padding:4px 0;">高级：所有者密钥</summary>
+        <div class="fl"><label>管理密钥</label><input id="inpRegToken" class="grow" type="password" placeholder="可留空" /></div>
+      </details>
+      <div class="btns" style="margin-top:8px; margin-bottom:0;">
+        <button id="btnCtlSave" class="mini">保存</button>
+        <button id="btnMasterExport" class="mini ghost" title="把控制端配置打包到剪贴板，用于快速配置其他控制端">导出到剪贴板</button>
+        <button id="btnMasterImport" class="mini ghost" title="从剪贴板导入控制端配置并自动同步（多控制端一键就绪）">从剪贴板导入</button>
+      </div>
+    </section>
+
     <section class="card">
       <div class="cardTitle">节点管理</div>
       <div class="btns" style="margin-bottom:8px;">
@@ -233,18 +237,6 @@
       <pre class="logbox" id="visitorLogPre">…</pre>
     </section>
 
-    <section class="card">
-      <div class="cardTitle">编排（opencode-fleet）</div>
-      <div class="btns" style="margin-bottom:0;">
-        <button id="btnFleet" class="mini">生成 fleet 配置片段</button>
-      </div>
-    </section>
-
-    <section class="card hidden" id="fleetCard">
-      <div class="cardTitle">fleet 配置片段<span style="flex:1"></span><button id="btnFleetClose" class="mini ghost">收起</button></div>
-      <pre class="logbox" id="fleetPre"></pre>
-    </section>
-
     <section class="card" id="mcpCard">
       <div class="cardTitle">MCP 集成（本机 opencode）<span style="flex:1"></span><button id="btnMcpRefresh" class="mini ghost">刷新状态</button></div>
       <div id="mcpStatus" class="dim">…</div>
@@ -254,6 +246,18 @@
         <button id="btnMcpWriteKeep" class="mini ghost" title="保留现有 fleet 条目（高级）">保留 fleet 写入</button>
         <button id="btnMcpRemove" class="mini ghost" title="移除 node-ctl 条目（写入前自动备份）">移除 MCP 配置</button>
       </div>
+    </section>
+
+    <section class="card">
+      <div class="cardTitle">编排（opencode-fleet · 高级/兼容）</div>
+      <div class="btns" style="margin-bottom:0;">
+        <button id="btnFleet" class="mini">生成 fleet 配置片段</button>
+      </div>
+    </section>
+
+    <section class="card hidden" id="fleetCard">
+      <div class="cardTitle">fleet 配置片段<span style="flex:1"></span><button id="btnFleetClose" class="mini ghost">收起</button></div>
+      <pre class="logbox" id="fleetPre"></pre>
     </section>
   </section>
 
@@ -449,9 +453,6 @@
       passHint.textContent = r.hasPassword ? "密码已设置（加密存储）" : "未设置（保存时自动生成）";
     }
     $("inpFrpc").value = cfg.frpc?.binary || "bin/frpc.exe";
-    const m = (await ipcRenderer.invoke("mesh:master:get")) || {};
-    $("inpFleetPass").value = m.fleetPassword || "";
-    $("inpRegToken").value = m.registry?.adminToken || "";
     const chip = $("nodeIdChip");
     if (r.registeredId) {
       chip.textContent = r.registeredId;
@@ -622,9 +623,21 @@
 
   /* ---------------- 主控 ---------------- */
   async function loadMasterTab() {
+    await loadCtlFields();
     await refreshMasterList();
     await refreshVisitorStatus();
     await loadMcpStatus();
+  }
+
+  /** 控制端凭据与 Hub 连接字段（卡片位于「主控」页；与「组网」页双向同步） */
+  async function loadCtlFields() {
+    const r = await ipcRenderer.invoke("mesh:node:get");
+    const cfg = r.cfg || {};
+    $("inpHubAddr").value = cfg.hub?.address || "";
+    $("inpHubPort").value = cfg.hub?.port || 18080;
+    const m = (await ipcRenderer.invoke("mesh:master:get")) || {};
+    $("inpFleetPass").value = m.fleetPassword || "";
+    $("inpRegToken").value = m.registry?.adminToken || "";
   }
 
   async function saveMasterForm() {
@@ -706,6 +719,7 @@
       if (r.syncError) parts.push(`同步失败：${r.syncError}`);
       setOp(`导入成功（${parts.join("，")}）`, "ok");
       await loadNodeForm();
+      await loadCtlFields();
       await refreshMasterList();
       if (beforeHub && r.registry.address !== beforeHub) {
         setOp(

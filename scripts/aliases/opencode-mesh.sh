@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Aoi_mesh 启动别名（Linux）— opencode-mesh Node App
+# opencode-mesh 启动（Linux）— Node App 启动别名
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 

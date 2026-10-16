@@ -1,5 +1,5 @@
-# GitHub 推送密钥快速加载（每次重启电脑后跑一次即可，口令输入一次）
-# 密钥：id_ed25519（GitHub 账户 39-Null 上的 "windows-h3c-aila"）
+﻿# GitHub 推送密钥快速加载（每次重启电脑后跑一次即可，口令输入一次）
+# 密钥：~/.ssh/id_ed25519（在 GitHub 账户中登记过公钥即可，密钥文件名可按需调整）
 $ErrorActionPreference = "Continue"
 $svc = Get-Service ssh-agent -ErrorAction SilentlyContinue
 if ($svc -and $svc.Status -ne "Running") {

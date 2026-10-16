@@ -342,7 +342,7 @@ App「主控」页内置 **MCP 集成** 卡片，步骤：
 
 > 多节点建议：各节点 opencode 密码**统一为同一个**（控制端编排使用同一密码访问所有节点；见下方「共享密码」）。修改密码时请逐节点同步修改，并按需更新控制端「共享密码」。
 
-### 6.3 控制端（可选）
+### 6.3 控制端凭据（可选；位于「主控」页）
 
 | 字段 | 是什么 | 怎么填 | 示例 / 默认 | 常见错误 |
 | --- | --- | --- | --- | --- |
@@ -380,7 +380,7 @@ git clone <本仓库地址>; cd opencode-mesh
 cd node-app; npm install; npm start
 ```
 
-3. （可选）快捷启动别名：将 `scripts\aliases\Aoi_mesh.cmd` 复制到 `%APPDATA%\npm\`，之后任意位置输入 `Aoi_mesh` 启动
+3. （可选）快捷启动别名：将 `scripts\aliases\opencode-mesh.cmd` 复制到 `%APPDATA%\npm\`，之后任意位置输入 `opencode-mesh` 启动
 4. 首次启动会弹出「快速配置」向导（见 §6）；仅当控制端用则点「仅作为控制端使用」
 
 ### 7.2 Linux（便携包 / 源码）
@@ -432,7 +432,7 @@ rm -rf /opt/opencode-mesh /etc/opencode-mesh /var/log/opencode-mesh
 
 - 退出 App（本机页「退出」或托盘右键「退出应用」）
 - 删除仓库目录（源码方式）或便携包目录（kit 方式）
-- 移除别名（如安装）：删除 `%APPDATA%\npm\Aoi_mesh.cmd`（Windows）或 `~/.local/bin/Aoi_mesh` 软链（Linux）
+- 移除别名（如安装）：删除 `%APPDATA%\npm\opencode-mesh.cmd`（Windows）或 `~/.local/bin/opencode-mesh` 软链（Linux）
 
 ### 8.5 凭据清理建议
 

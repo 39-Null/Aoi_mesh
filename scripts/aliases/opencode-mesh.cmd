@@ -1,5 +1,5 @@
 @echo off
-rem Aoi_mesh 启动别名（Windows）— opencode-mesh Node App
+rem opencode-mesh 启动（Windows）— Node App 启动别名
 setlocal
 set "ROOT=%~dp0..\.."
 if exist "%ROOT%\node-app\node_modules\electron\dist\electron.exe" (
