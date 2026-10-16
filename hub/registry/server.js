@@ -302,6 +302,12 @@ async function handleRequest(req, res) {
       if (!entry) return json(res, 401, { ok: false, error: "unauthorized" });
       entry.lastSeen = new Date().toISOString();
       if (body.version) entry.version = body.version;
+      // v1.5 增补：平台标签（白名单校验，防止把任意串写进注册表）
+      const os = String(body.os || "");
+      const arch = String(body.arch || "");
+      if (/^(win32|linux|darwin)$/.test(os) && /^[a-z0-9_]{1,12}$/.test(arch)) {
+        entry.platform = `${os}/${arch}`;
+      }
       save();
       return json(res, 200, { ok: true });
     }
@@ -327,6 +333,7 @@ async function handleRequest(req, res) {
         stcpSecret: n.stcpSecret || null,
         token: n.token || null,
         version: n.version || null,
+        platform: n.platform || null,
       }));
       return json(res, 200, { ok: true, nodes: list });
     }

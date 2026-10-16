@@ -16,9 +16,12 @@ const {
   saveConfigFile,
   opencodeApi,
   dispatchToNode,
+  sessionUsage,
+  compactSession,
+  clearSession,
 } = require("./lib");
 
-const SERVER_INFO = { name: "opencode-mesh-node-ctl", version: "0.2.0" };
+const SERVER_INFO = { name: "opencode-mesh-node-ctl", version: "0.3.0" };
 const PROTOCOL_VERSION = "2024-11-05";
 
 const NODE_PROP = {
@@ -124,6 +127,22 @@ const TOOLS = [
   {
     name: "node_reset",
     description: "清除某节点的会话绑定（本地记录）；下次派发将新建会话。",
+    inputSchema: { type: "object", properties: { ...NODE_PROP }, required: ["node"] },
+  },
+  {
+    name: "node_context",
+    description: "查看某节点会话的上下文占用：绑定的 opencode 会话末轮 tokens.total 与模型上下文上限（百分比）。",
+    inputSchema: { type: "object", properties: { ...NODE_PROP }, required: ["node"] },
+  },
+  {
+    name: "node_compact",
+    description:
+      "压缩本机与该节点的对话上下文：生成结构化结转摘要（digest：事实/未完成/引用）→ 在目标节点新建会话接续 → 换绑。上下文占用随之回落；旧会话归档保留。",
+    inputSchema: { type: "object", properties: { ...NODE_PROP }, required: ["node"] },
+  },
+  {
+    name: "node_clear",
+    description: "清空本机与该节点的对话上下文：删除目标节点上的绑定会话并清除绑定（下次派发自动新建）。不可恢复。",
     inputSchema: { type: "object", properties: { ...NODE_PROP }, required: ["node"] },
   },
 ];
@@ -328,6 +347,29 @@ async function callTool(name, args) {
       return await toolInterrupt(args.node, args.sessionId);
     case "node_reset":
       return await toolReset(args.node);
+    case "node_context": {
+      const { config } = loadConfig();
+      const hit = resolveNodeEntry(config, args.node);
+      if (!hit?.node) throw new Error(`未配置节点 "${args.node}"`);
+      const nodeCfg = { ...hit.node, opencodePassword: resolveFleetPassword(config) };
+      const u = await sessionUsage(nodeCfg, hit.node.sessionId);
+      if (!u.ok) throw new Error(u.error);
+      if (!u.sessionId) return `节点 ${args.node} 无绑定会话（先派发一次任务）`;
+      if (u.stale) return `节点 ${args.node} 的绑定会话不存在（可能已被清理）；下次派发将自动重建`;
+      const limitPart = u.limit > 0 ? `/${u.limit}（${u.percent}%）` : "（上限未知）";
+      return `节点 ${args.node} 会话占用：${u.used}${limitPart}；模型 ${u.modelID || "?"}`;
+    }
+    case "node_compact": {
+      const { path: cfgPath, config } = loadConfig();
+      const r = await compactSession(cfgPath, config, args.node, {});
+      if (!r.ok) throw new Error(r.error);
+      return `已压缩：gen ${r.gen}，事实 ${r.facts} 条；会话 ${r.oldSessionId} → ${r.newSessionId}（确认：${r.ack}）`;
+    }
+    case "node_clear": {
+      const { path: cfgPath, config } = loadConfig();
+      const r = await clearSession(cfgPath, config, args.node);
+      return r.deletedSessionId ? `已清空：删除会话 ${r.deletedSessionId}（下次派发将新建）` : "无绑定会话（已清空绑定）";
+    }
     default:
       throw new Error(`未知工具：${name}`);
   }

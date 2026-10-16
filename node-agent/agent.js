@@ -627,7 +627,13 @@ transport.useEncryption = true
       const res = await httpJson(
         "POST",
         `${this.hubBase}/heartbeat`,
-        { id: this.state.id || this.config.name, name: this.config.name, version: VERSION },
+        {
+          id: this.state.id || this.config.name,
+          name: this.config.name,
+          version: VERSION,
+          os: process.platform,
+          arch: process.arch,
+        },
         { "X-Node-Token": this.state.token },
         10000,
         this.hubFingerprint

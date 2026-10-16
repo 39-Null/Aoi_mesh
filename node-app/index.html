@@ -77,6 +77,9 @@
   .nodeHead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .nodeName { font-size: 14px; font-weight: 600; color: #e8eaed; }
   .badge { font-size: 11px; padding: 1px 8px; border-radius: 9px; background: #232936; color: #9aa4b2; flex: none; }
+  .badgeCtx { border: 1px solid transparent; }
+  .badgeCtx.warn { background: #3a2f14; color: #e8c05a; border-color: #6b5520; }
+  .badgeCtx.bad { background: #3d1a1e; color: #ff6b6b; border-color: #7a2c33; }
   .badge.ok { color: #4cc38a; }
   .badge.bad { color: #e5534b; }
   .nodeId { font-size: 11px; color: #7d8695; font-family: Consolas, monospace; margin-left: auto; }
@@ -221,6 +224,13 @@
         <button id="btnMasterExport" class="mini ghost" title="把控制端配置打包到剪贴板（含凭据，请勿外发），用于备份或迁移到其他设备">导出到剪贴板</button>
         <button id="btnMasterImport" class="mini ghost" title="从剪贴板导入控制端配置并自动同步节点">从剪贴板导入</button>
       </div>
+    </section>
+
+    <section class="card">
+      <div class="cardTitle">会话管理</div>
+      <div class="fl" style="align-items:flex-start;"><label style="min-width:0; line-height:1.7;"><input id="inpAutoCompact" type="checkbox" /> 占用达 80% 时，派发前自动压缩（本机作为主控）</label></div>
+      <div class="fl" style="align-items:flex-start;"><label style="min-width:0; line-height:1.7;"><input id="inpCleanupInbound" type="checkbox" /> 本机作为节点：App 退出时清理入站会话（保留关键日志）</label></div>
+      <div class="dim" style="font-size:12px; margin-top:2px;">入站会话 = 其他设备发给本机的对话上下文；清理仅保留一行元数据日志（含末条回执摘要），不可恢复。两项默认关闭。</div>
     </section>
 
     <div class="groupLabel">— Telegram Bot —</div>
@@ -472,6 +482,7 @@
       chip.textContent = "未注册";
       chip.className = "idchip";
     }
+    localNodeId = r.registeredId || "";
     const st = $("nodeState");
     if (r.rootFound === false) {
       st.textContent = `未找到仓库内容（${r.agentDir}）。便携包请通过 start-app.sh 启动；开发场景请将 App 放在仓库 node-app/ 目录内；或设置环境变量 OPENCODE_MESH_ROOT 指向仓库根目录`;
@@ -638,6 +649,7 @@
     await refreshVisitorStatus();
     await loadMcpStatus();
     await loadUpdVersion();
+    await loadSessionPolicy();
   }
 
   async function loadMasterTab() {
@@ -666,6 +678,7 @@
       },
       fleetPasswordEnc: old.fleetPasswordEnc || "",
       opencodeConfigPath: old.opencodeConfigPath || "",
+      autoCompact: !!old.autoCompact,
       nodes: old.nodes || {},
     };
     const saveRes = await ipcRenderer.invoke("mesh:master:save", cfg);
@@ -742,6 +755,58 @@
     }
   });
 
+  let localNodeId = null;
+  async function ensureLocalNodeId() {
+    if (localNodeId !== null) return localNodeId;
+    try {
+      const r = await ipcRenderer.invoke("mesh:node:get");
+      localNodeId = r?.registeredId || "";
+    } catch {
+      localNodeId = "";
+    }
+    return localNodeId;
+  }
+  function fmtTokens(n) {
+    if (!n) return "0";
+    if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+    if (n >= 1000) return Math.round(n / 1000) + "K";
+    return String(n);
+  }
+  /** ctx 徽标：本机不标注；仅目标设备显示具体百分比（<60 中性 / ≥60 黄 / ≥80 红 flush） */
+  function ctxBadgeInfo(n, localId) {
+    if (localId && n.id === localId) return null;
+    const u = n.usage || null;
+    const timeStr = u?.at ? new Date(u.at).toLocaleTimeString() : "";
+    if (!u || !u.used) {
+      return { cls: "badge badgeCtx", text: "ctx —", title: "尚无会话占用记录（派发任务后自动记录）" };
+    }
+    if (!u.limit) {
+      return { cls: "badge badgeCtx", text: `ctx ${fmtTokens(u.used)}`, title: `占用 ${u.used} tokens（模型上限未知）· ${timeStr}` };
+    }
+    const pct = Math.round((u.used / u.limit) * 100);
+    const cls = pct >= 80 ? "badge badgeCtx bad" : pct >= 60 ? "badge badgeCtx warn" : "badge badgeCtx";
+    return {
+      cls,
+      text: pct >= 80 ? `ctx ${pct}% flush` : `ctx ${pct}%`,
+      title: `${u.used}/${u.limit}（${pct}%）· 模型 ${u.model || "?"} · 更新于 ${timeStr}`,
+    };
+  }
+  /** 事件驱动刷新各目标节点（非本机）的会话占用；失败保留缓存值 */
+  async function refreshUsages(nodes) {
+    const localId = await ensureLocalNodeId();
+    const targets = (nodes || []).filter((n) => n.hasSession && n.id !== localId);
+    await Promise.all(
+      targets.map(async (n) => {
+        try {
+          const u = await ipcRenderer.invoke("mesh:master:contextUsage", n.id);
+          if (u?.ok && u.sessionId) {
+            n.usage = { used: u.used, limit: u.limit || 0, model: u.modelID || "", at: new Date().toISOString() };
+          }
+        } catch {}
+      })
+    );
+  }
+
   function onlineBadgeInfo(online) {
     return {
       cls: "badge badgeOnline " + (online === true ? "ok" : online === false ? "bad" : ""),
@@ -766,6 +831,7 @@
   }
 
   async function refreshMasterList() {
+    await ensureLocalNodeId();
     const r = await ipcRenderer.invoke("mesh:master:list");
     const box = $("nodeList");
     box.textContent = "";
@@ -793,10 +859,20 @@
       ocb.className = oc.cls;
       ocb.textContent = oc.text;
       if (oc.title) ocb.title = oc.title;
+      const tail = [nm, badge, ocb];
+      const ctx = ctxBadgeInfo(n, localNodeId);
+      if (ctx) {
+        const cb = document.createElement("span");
+        cb.className = ctx.cls;
+        cb.textContent = ctx.text;
+        cb.title = ctx.title || "";
+        tail.push(cb);
+      }
       const idtag = document.createElement("span");
       idtag.className = "nodeId";
       idtag.textContent = "id: " + (n.id || n.name);
-      head.append(nm, badge, ocb, idtag);
+      tail.push(idtag);
+      head.append(...tail);
       const meta = document.createElement("div");
       meta.className = "nodeMeta";
       meta.textContent = nodeMetaText(n);
@@ -818,8 +894,75 @@
         };
         btns.append(b);
       }
+      const cbtn = document.createElement("button");
+      cbtn.className = "mini ghost";
+      cbtn.textContent = "压缩";
+      cbtn.title = "压缩本机与该节点的对话上下文（结构化结转 + 换新会话；旧会话归档）";
+      cbtn.onclick = () => compactNodeUI(n, cbtn);
+      const kbtn = document.createElement("button");
+      kbtn.className = "mini ghost";
+      kbtn.textContent = "清空";
+      kbtn.title = "清空本机与该节点的对话上下文（删除目标节点会话，不可恢复）";
+      kbtn.onclick = () => clearNodeUI(n, kbtn);
+      btns.append(cbtn, kbtn);
       item.append(head, meta, btns);
       box.append(item);
+    }
+    // 事件驱动：拉取最新占用后原地更新 ctx 徽标（失败保留缓存值）
+    refreshUsages(r.nodes).then(() => {
+      for (const n of r.nodes) {
+        const item = box.querySelector(`.nodeItem[data-id="${CSS.escape(n.id || n.name)}"]`);
+        const cb = item?.querySelector(".badgeCtx");
+        const info = ctxBadgeInfo(n, localNodeId);
+        if (cb && info) {
+          cb.className = info.cls;
+          cb.textContent = info.text;
+          cb.title = info.title || "";
+        }
+      }
+    });
+  }
+
+  async function compactNodeUI(n, btn) {
+    if (busy) return;
+    const name = n.id || n.name;
+    if (!confirm(`压缩与「${n.name || name}」的对话上下文？\n\n• 目标节点生成结构化结转摘要（事实/未完成/引用）\n• 新会话接续并重新绑定\n• 旧会话归档保留，占用随之回落`)) return;
+    btn.disabled = true;
+    const old = btn.textContent;
+    btn.textContent = "压缩中…";
+    setOp(`正在压缩 ${n.name || name} 的会话上下文…`);
+    try {
+      const r = await ipcRenderer.invoke("mesh:master:compactSession", name);
+      if (!r?.ok) {
+        setOp(`压缩失败：${r?.error || "未知错误"}`, "bad");
+        return;
+      }
+      setOp(`已压缩：gen ${r.gen}，事实 ${r.facts} 条；会话 ${String(r.oldSessionId).slice(0, 8)}… → ${String(r.newSessionId).slice(0, 8)}…（确认：${r.ack}）`, "ok");
+      await refreshMasterList();
+    } finally {
+      btn.disabled = false;
+      if (btn.textContent === "压缩中…") btn.textContent = old;
+    }
+  }
+
+  async function clearNodeUI(n, btn) {
+    if (busy) return;
+    const name = n.id || n.name;
+    if (!confirm(`清空与「${n.name || name}」的对话上下文？\n\n• 删除目标节点上的绑定会话（不可恢复）\n• 下次派发将自动新建会话`)) return;
+    btn.disabled = true;
+    const old = btn.textContent;
+    btn.textContent = "清空中…";
+    try {
+      const r = await ipcRenderer.invoke("mesh:master:clearSession", name);
+      if (!r?.ok) {
+        setOp(`清空失败：${r?.error || "未知错误"}`, "bad");
+        return;
+      }
+      setOp(r.deletedSessionId ? `已清空：删除会话 ${String(r.deletedSessionId).slice(0, 8)}…` : "无绑定会话（已清空绑定）", "ok");
+      await refreshMasterList();
+    } finally {
+      btn.disabled = false;
+      if (btn.textContent === "清空中…") btn.textContent = old;
     }
   }
 
@@ -848,6 +991,15 @@
         ocb.className = oc.cls;
         ocb.textContent = oc.text;
         ocb.title = oc.title || "";
+      }
+      const cxb = item.querySelector(".badgeCtx");
+      if (cxb) {
+        const cinfo = ctxBadgeInfo(n, localNodeId);
+        if (cinfo) {
+          cxb.className = cinfo.cls;
+          cxb.textContent = cinfo.text;
+          cxb.title = cinfo.title || "";
+        }
       }
       const meta = item.querySelector(".nodeMeta");
       if (meta) meta.textContent = nodeMetaText(n);
@@ -1023,6 +1175,25 @@
     try { await ipcRenderer.invoke("mesh:node:startFull"); } catch {}
     setTimeout(() => location.reload(), 1200);
   });
+
+  /* ---------------- 会话管理（策略勾选） ---------------- */
+  async function loadSessionPolicy() {
+    try {
+      const p = await ipcRenderer.invoke("mesh:session:policyGet");
+      if (p?.ok) {
+        $("inpAutoCompact").checked = !!p.autoCompact;
+        $("inpCleanupInbound").checked = !!p.cleanupInboundOnQuit;
+      }
+    } catch {}
+  }
+  $("inpAutoCompact").onchange = async () => {
+    const r = await ipcRenderer.invoke("mesh:session:policySet", { autoCompact: $("inpAutoCompact").checked });
+    setOp(r?.ok ? "自动压缩设置已保存" : `保存失败：${r?.error || "未知错误"}`, r?.ok ? "ok" : "bad");
+  };
+  $("inpCleanupInbound").onchange = async () => {
+    const r = await ipcRenderer.invoke("mesh:session:policySet", { cleanupInboundOnQuit: $("inpCleanupInbound").checked });
+    setOp(r?.ok ? "退出清理设置已保存" : `保存失败：${r?.error || "未知错误"}`, r?.ok ? "ok" : "bad");
+  };
 
   /* ---------------- 首次配置向导 / 退出 ---------------- */
   $("btnSetupStart").onclick = () => withBusy($("btnSetupStart"), "配置中…", async () => {

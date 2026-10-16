@@ -937,6 +937,7 @@ async function syncMasterNodes(root) {
       agentUrl: prev.agentUrl || `http://127.0.0.1:${n.agentRemotePort}`,
       opencodeUrl: prev.opencodeUrl || `http://127.0.0.1:${n.opencodeRemotePort}`,
       agentToken: n.token || prev.agentToken || "",
+      platform: n.platform || prev.platform || "",
     };
   }
   const removed = Object.keys(map).filter((k) => !pending.has(k));
@@ -1041,9 +1042,146 @@ async function listNodesMerged(root) {
       local: !!loc,
       reachable: reach,
       opencode,
+      usage: loc?.usage || null,
+      platform: loc?.platform || reg?.platform || null,
+      hasSession: !!loc?.sessionId,
     });
   }
   return { ok: true, nodes: out, registryOk: regNodes !== null };
+}
+
+/* ============================ v1.5：会话占用 / 压缩 / 清空 / 策略 / 退出清理 ============================ */
+
+let _nodeCtlLib = null;
+/** 懒加载 node-ctl/lib.js（复用会话管理逻辑，单一真相） */
+function nodeCtlLib(root) {
+  if (_nodeCtlLib) return _nodeCtlLib;
+  try {
+    _nodeCtlLib = require(path.join(root || findRepoRoot(), "node-ctl", "lib.js"));
+  } catch {
+    _nodeCtlLib = null;
+  }
+  return _nodeCtlLib;
+}
+
+/** 查询某节点（主控×目标绑定会话）的上下文占用；成功则回写 nodes.json 缓存 */
+async function nodeContextUsage(root, name) {
+  ensureRepoRoot(root);
+  const cfg = getMasterConfig(root) || {};
+  const lib = nodeCtlLib(root);
+  if (!lib) return { ok: false, error: "缺少 node-ctl/lib.js（请更新仓库）" };
+  const hit = lib.resolveNodeEntry(cfg, name);
+  if (!hit?.node) return { ok: false, error: `未配置节点 "${name}"` };
+  const nodeCfg = { ...hit.node, opencodePassword: lib.resolveFleetPassword(cfg) };
+  const u = await lib.sessionUsage(nodeCfg, hit.node.sessionId);
+  if (u.ok && u.sessionId && cfg.nodes?.[hit.key]) {
+    cfg.nodes[hit.key] = {
+      ...cfg.nodes[hit.key],
+      usage: { used: u.used, limit: u.limit || 0, model: u.modelID || "", at: new Date().toISOString() },
+    };
+    try { saveMasterConfig(root, cfg); } catch {}
+  }
+  return u;
+}
+
+/** 压缩（结构化轮换）：digest 结转 → 新会话接续 → 换绑 */
+async function compactNodeSession(root, name) {
+  ensureRepoRoot(root);
+  const cfg = getMasterConfig(root) || {};
+  const lib = nodeCtlLib(root);
+  if (!lib) return { ok: false, error: "缺少 node-ctl/lib.js（请更新仓库）" };
+  return await lib.compactSession(nodesCfgPath(root), cfg, name, {});
+}
+
+/** 清空：删除目标节点上的绑定会话并清除绑定（不可恢复） */
+async function clearNodeSession(root, name) {
+  ensureRepoRoot(root);
+  const cfg = getMasterConfig(root) || {};
+  const lib = nodeCtlLib(root);
+  if (!lib) return { ok: false, error: "缺少 node-ctl/lib.js（请更新仓库）" };
+  return await lib.clearSession(nodesCfgPath(root), cfg, name);
+}
+
+/** 会话策略读取（自动压缩=主控侧 nodes.json；退出清理=节点侧 node.json） */
+function sessionPolicyGet(root) {
+  const m = getMasterConfig(root) || {};
+  const n = readJson(path.join(agentDir(root), "node.json")) || {};
+  return { ok: true, autoCompact: !!m.autoCompact, cleanupInboundOnQuit: !!n.cleanupInboundOnQuit };
+}
+
+/** 会话策略写入（勾选框） */
+function sessionPolicySet(root, patch = {}) {
+  if ("autoCompact" in patch) {
+    const cfg = getMasterConfig(root) || {};
+    cfg.autoCompact = !!patch.autoCompact;
+    saveMasterConfig(root, cfg);
+  }
+  if ("cleanupInboundOnQuit" in patch) {
+    const p = path.join(agentDir(root), "node.json");
+    const n = readJson(p) || {};
+    n.cleanupInboundOnQuit = !!patch.cleanupInboundOnQuit;
+    writeJson(p, n);
+    hardenFile(p);
+  }
+  return sessionPolicyGet(root);
+}
+
+/** 退出清理（可选，默认关）：删除本机上由其他设备创建的入站会话（标题前缀 opencode-mesh）；
+ *  仅保留关键日志（元数据 + 末条回执摘要）到 node-agent/data/mesh-session-log.jsonl */
+async function cleanupInboundSessions(root) {
+  try {
+    const nodeCfg = readJson(path.join(agentDir(root), "node.json"));
+    if (!nodeCfg?.cleanupInboundOnQuit) return { ok: true, skipped: "disabled" };
+    const port = nodeCfg.opencode?.port || 4096;
+    let password = "";
+    try {
+      const oc = nodeCfg.opencode || {};
+      password = oc.passwordEnc ? secretStore(root).unseal(oc.passwordEnc) : (oc.password || "");
+    } catch {}
+    const auth = "Basic " + Buffer.from(`opencode:${password}`).toString("base64");
+    const base = `http://127.0.0.1:${port}`;
+    const list = await httpJson("GET", `${base}/session`, undefined, { Authorization: auth }, 6000);
+    if (list.status !== 200 || !Array.isArray(list.json)) {
+      return { ok: false, error: "读取本机会话失败（opencode 可能未运行）" };
+    }
+    const targets = list.json.filter((s) => typeof s?.title === "string" && s.title.startsWith("opencode-mesh "));
+    if (!targets.length) return { ok: true, deleted: 0, total: 0 };
+    const lib = nodeCtlLib(root);
+    const logPath = path.join(agentDir(root), "data", "mesh-session-log.jsonl");
+    let deleted = 0;
+    for (const s of targets) {
+      let lastReceipt = null;
+      try {
+        const msgs = await httpJson("GET", `${base}/session/${s.id}/message?limit=4`, undefined, { Authorization: auth }, 6000);
+        if (Array.isArray(msgs.json) && lib?.parseResultBlock) {
+          for (const m of msgs.json) {
+            if (m?.info?.role !== "assistant") continue;
+            const texts = (m.parts || []).filter((p) => p.type === "text").map((p) => p.text).join("\n");
+            const parsed = lib.parseResultBlock(texts);
+            if (parsed) lastReceipt = { task: parsed.task || "", status: parsed.status || "", summary: String(parsed.summary || "").slice(0, 200) };
+          }
+        }
+      } catch {}
+      const line = JSON.stringify({
+        sessionId: s.id,
+        from: s.title.replace(/^opencode-mesh\s+/, ""),
+        deletedAt: new Date().toISOString(),
+        createdAt: s.time?.created || null,
+        tokens: s.tokens || null,
+        cost: s.cost ?? null,
+        lastReceipt,
+      });
+      try {
+        fs.mkdirSync(path.dirname(logPath), { recursive: true });
+        fs.appendFileSync(logPath, line + "\n");
+      } catch {}
+      const del = await httpJson("DELETE", `${base}/session/${s.id}`, undefined, { Authorization: auth }, 8000);
+      if (del.status === 200 || del.status === 404) deleted++;
+    }
+    return { ok: true, deleted, total: targets.length };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
 }
 
 /** 全自动隧道：未运行则按需生成配置并启动；用户手动停用（visitorPaused）则跳过。
@@ -1476,6 +1614,12 @@ module.exports = {
   registryFrps,
   listNodesMerged,
   nodeAction,
+  nodeContextUsage,
+  compactNodeSession,
+  clearNodeSession,
+  sessionPolicyGet,
+  sessionPolicySet,
+  cleanupInboundSessions,
   generateVisitors,
   visitorStatus,
   startVisitor,

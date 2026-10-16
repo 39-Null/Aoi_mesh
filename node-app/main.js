@@ -577,6 +577,44 @@ ipcMain.handle("app:update:apply", async (_e, opts) => {
   }
 });
 
+/* ==================== v1.5：会话占用 / 压缩 / 清空 / 策略 ==================== */
+
+ipcMain.handle("mesh:master:contextUsage", async (_e, name) => {
+  try {
+    return await mesh.nodeContextUsage(ROOT, String(name || ""));
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+ipcMain.handle("mesh:master:compactSession", async (_e, name) => {
+  try {
+    return await mesh.compactNodeSession(ROOT, String(name || ""));
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+ipcMain.handle("mesh:master:clearSession", async (_e, name) => {
+  try {
+    return await mesh.clearNodeSession(ROOT, String(name || ""));
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+ipcMain.handle("mesh:session:policyGet", () => {
+  try {
+    return mesh.sessionPolicyGet(ROOT);
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+ipcMain.handle("mesh:session:policySet", (_e, patch) => {
+  try {
+    return mesh.sessionPolicySet(ROOT, patch || {});
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
 let mainWindow = null;
 let tray = null;
 let trayHintShown = false;
@@ -675,6 +713,13 @@ if (!gotLock) {
     if (quitCleanupDone) return;
     e.preventDefault();
     (async () => {
+      // v1.5：可选的入站会话清理（开关在设置页；默认关）——须在 opencode 被停之前执行
+      try {
+        await Promise.race([
+          mesh.cleanupInboundSessions(ROOT).catch(() => {}),
+          new Promise((r) => setTimeout(r, 8000)),
+        ]);
+      } catch {}
       try {
         await Promise.race([
           mesh.shutdownAll(ROOT).catch(() => {}),

@@ -228,16 +228,22 @@ function newTaskId(prefix = "t") {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 6)}`;
 }
 
-function wrapEnvelope({ from, task, mode = "one-shot", body }) {
-  return [
+/** 本机平台标签（v1.5：env 头用） */
+function platformTag() {
+  return `${process.platform}/${process.arch}`;
+}
+
+function wrapEnvelope({ from, task, mode = "one-shot", body, env }) {
+  const lines = [
     "[opencode-mesh v1]",
     `from: ${from}`,
     `task: ${task}`,
     `mode: ${mode}`,
     "reply: result-block",
-    "---",
-    body,
-  ].join("\n");
+  ];
+  if (env) lines.push(`env: ${env}`);
+  lines.push("---", body);
+  return lines.join("\n");
 }
 
 function parseResultBlock(text) {
@@ -291,16 +297,236 @@ async function opencodeApi(nodeCfg, method, endpoint, body, timeoutMs = 30000) {
   }
 }
 
-/** 按 opencode-mesh 协议派发任务（复用节点会话；解析回执块） */
-async function dispatchToNode(configPath, config, nodeName, body, opts = {}) {
+/* ==================== v1.5 增补：会话结转（digest）与会话管理 ==================== */
+
+/** 解析 [opencode-mesh-digest v1] 块（宽松：facts/pending/refs 支持多行续写；无块返回 null） */
+function parseDigestBlock(text) {
+  const s = String(text || "");
+  const strict = /\[opencode-mesh-digest v1\]([\s\S]*?)\[\/opencode-mesh-digest\]/i.exec(s);
+  if (!strict) return null;
+  const out = { task: "", gen: 1, facts: [], pending: "", refs: "" };
+  let section = null;
+  for (const raw of strict[1].split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const m = /^(task|gen|facts|pending|refs)\s*[:：]\s*(.*)$/i.exec(line);
+    if (m) {
+      const k = m[1].toLowerCase();
+      const v = m[2].trim();
+      if (k === "task") out.task = v;
+      else if (k === "gen") out.gen = parseInt(v, 10) || 1;
+      else if (k === "facts") { section = "facts"; if (v && !/^</.test(v)) out.facts.push(v.replace(/^[-•]\s*/, "")); }
+      else if (k === "pending") { section = "pending"; if (!/^none$/i.test(v)) out.pending = v; }
+      else if (k === "refs") { section = "refs"; if (!/^none$/i.test(v)) out.refs = v; }
+      continue;
+    }
+    if (section === "facts") out.facts.push(line.replace(/^[-•]\s*/, ""));
+    else if (section === "pending") out.pending = out.pending ? `${out.pending} ${line}` : line;
+    else if (section === "refs") out.refs = out.refs ? `${out.refs} ${line}` : line;
+  }
+  if (!out.facts.length && !out.pending && !out.refs) return null;
+  return out;
+}
+
+const _providersCache = new Map(); // opencodeUrl -> { at, data }（模型上下文上限缓存，30 分钟）
+
+/** 读取目标 opencode 的 provider/模型清单（带缓存；缓存命中失败时回退缓存） */
+async function fetchProviders(nodeCfg, { force = false } = {}) {
+  const base = (nodeCfg.opencodeUrl || "").replace(/\/+$/, "");
+  const hit = _providersCache.get(base);
+  if (!force && hit && Date.now() - hit.at < 30 * 60 * 1000) return hit.data;
+  const r = await opencodeApi(nodeCfg, "GET", "/config/providers", undefined, 8000);
+  if (r.status !== 200 || !r.json) return hit ? hit.data : null;
+  _providersCache.set(base, { at: Date.now(), data: r.json });
+  return r.json;
+}
+
+/** 会话上下文占用：末条 assistant 的 tokens.total（当前占用）÷ 模型 limit.context（上限） */
+async function sessionUsage(nodeCfg, sessionId) {
+  if (!sessionId) return { ok: true, sessionId: null, used: 0, limit: 0, percent: null };
+  const r = await opencodeApi(nodeCfg, "GET", `/session/${sessionId}/message?limit=2`, undefined, 10000);
+  if (r.status === 404) {
+    return { ok: true, sessionId, stale: true, used: 0, limit: 0, percent: null };
+  }
+  if (r.status !== 200 || !Array.isArray(r.json)) {
+    return { ok: false, sessionId, error: `读取会话消息失败（HTTP ${r.status}${r.text ? ` ${String(r.text).slice(0, 80)}` : ""}）` };
+  }
+  const assistants = r.json.filter((m) => m?.info?.role === "assistant" && m.info.tokens);
+  const last = assistants[assistants.length - 1];
+  if (!last) return { ok: true, sessionId, used: 0, limit: 0, percent: null };
+  const used = Number(last.info.tokens.total) || 0;
+  const providerID = last.info.providerID || "";
+  const modelID = last.info.modelID || "";
+  let limit = 0;
+  try {
+    const provs = await fetchProviders(nodeCfg);
+    const p = (provs?.providers || []).find((x) => x.id === providerID) || null;
+    const mdl = p?.models?.[modelID] || null;
+    if (mdl?.limit?.context) limit = Number(mdl.limit.context) || 0;
+  } catch {}
+  const percent = limit > 0 ? Math.round((used / limit) * 100) : null;
+  return { ok: true, sessionId, used, limit, percent, providerID, modelID };
+}
+
+/** 压缩会话：digest（可带前代合并）→ 新会话 resume 接续 → 换绑；失败保持原样（保守回退） */
+async function compactSession(configPath, config, nodeName, opts = {}) {
   const hit = resolveNodeEntry(config, nodeName);
   if (!hit?.node?.opencodeUrl) throw new Error(`节点 "${nodeName}" 缺少 opencodeUrl（先在 App「主控」页同步节点）`);
   const nodeKey = hit.key;
   const node = hit.node;
   const nodeCfg = { ...node, opencodePassword: resolveFleetPassword(config) };
   if (!nodeCfg.opencodePassword) throw new Error("缺少统一密码（请在 App「设置」页配置本机节点密码，或从其他控制端导入配置）");
+  if (!node.sessionId) return { ok: false, error: "该节点尚无绑定会话（先派发一次任务）" };
+
+  const probe = await opencodeApi(nodeCfg, "GET", `/session/${node.sessionId}`, undefined, 8000);
+  if (probe.status !== 200) return { ok: false, error: "绑定会话不存在（可能已被清空），请先派发任务重建" };
 
   const from = opts.from || "master";
+  const task = newTaskId("digest");
+  const prev = node.digest && node.digest.text ? node.digest : null;
+  const gen = (prev?.gen || 0) + 1;
+
+  let body = [
+    "本任务：生成本会话的上下文结转摘要（用于接续到新会话）。",
+    "严格只输出下列块（不要任何其他文字）。facts 每行一条、抽取式逐字保留关键路径/命令/结论/约束，按重要性排序：",
+    "[opencode-mesh-digest v1]",
+    `task: ${task}`,
+    `gen: ${gen}`,
+    "facts: <事实行>",
+    "pending: <未完成事项或 none>",
+    "refs: <产物/日志路径或 none>",
+    "[/opencode-mesh-digest]",
+  ].join("\n");
+  if (prev) {
+    body += `\n\n上一代摘要（合并规则：保留仍有效事实、删除过期、追加新增；只输出合并后的块）：\n${prev.text}`;
+  }
+
+  const env = `s=${platformTag()} r=${node.platform || "?"}`;
+  const req = wrapEnvelope({ from, task, mode: "one-shot", body, env });
+  const r1 = await opencodeApi(nodeCfg, "POST", `/session/${node.sessionId}/message`, { parts: [{ type: "text", text: req }] }, (opts.timeoutSec || 300) * 1000);
+  if (r1.status !== 200 || !r1.json) return { ok: false, error: `digest 请求失败（HTTP ${r1.status}）` };
+  const text1 = (r1.json.parts || []).filter((p) => p.type === "text").map((p) => p.text).join("\n");
+  const digest = parseDigestBlock(text1);
+  if (!digest) return { ok: false, error: "digest 块不合规，已放弃轮换（会话保持原样）" };
+
+  const created = await opencodeApi(nodeCfg, "POST", "/session", { title: `opencode-mesh ${from}` }, 15000);
+  if (created.status !== 200 || !created.json?.id) return { ok: false, error: `创建新会话失败（HTTP ${created.status}）` };
+  const newSessionId = created.json.id;
+
+  const digestText = [
+    "[opencode-mesh-digest v1]",
+    `task: ${task}`,
+    `gen: ${digest.gen}`,
+    "facts:",
+    ...digest.facts.map((f) => `- ${f}`),
+    `pending: ${digest.pending || "none"}`,
+    `refs: ${digest.refs || "none"}`,
+    "[/opencode-mesh-digest]",
+  ].join("\n");
+  const receipts = (node.history || [])
+    .slice(0, 2)
+    .map((h) => `task: ${h.task} → ${h.status}\nsummary: ${h.summary || ""}`)
+    .join("\n---\n");
+  const resumeBody = [
+    `上下文结转（mode: resume）：以下为上一会话的结转摘要（gen ${digest.gen}）与近窗回执。`,
+    "仅回执确认加载（status: done，summary: 已加载结转），不要执行其它动作。",
+    digestText,
+    receipts ? `近窗回执：\n${receipts}` : "",
+  ].filter(Boolean).join("\n");
+  const resumeReq = wrapEnvelope({ from, task: newTaskId("resume"), mode: "resume", body: resumeBody, env });
+  const r2 = await opencodeApi(nodeCfg, "POST", `/session/${newSessionId}/message`, { parts: [{ type: "text", text: resumeReq }] }, (opts.timeoutSec || 300) * 1000);
+  const text2 = r2.status === 200 && r2.json ? (r2.json.parts || []).filter((p) => p.type === "text").map((p) => p.text).join("\n") : "";
+  const ack = parseResultBlock(text2);
+
+  const usageInfo = r2.json?.info?.tokens?.total
+    ? { used: Number(r2.json.info.tokens.total), model: r2.json.info.modelID || node.usage?.model || "", at: new Date().toISOString() }
+    : node.usage || null;
+  const prevSessions = [node.sessionId, ...(node.prevSessions || [])].filter(Boolean).slice(0, 5);
+  config.nodes[nodeKey] = {
+    ...node,
+    sessionId: newSessionId,
+    prevSessions,
+    digest: { gen: digest.gen, text: digestText.slice(0, 2000), at: new Date().toISOString() },
+    ...(usageInfo ? { usage: usageInfo } : {}),
+  };
+  if (configPath) {
+    try { saveConfigFile(configPath, config); } catch {}
+  }
+  return {
+    ok: true,
+    oldSessionId: node.sessionId,
+    newSessionId,
+    gen: digest.gen,
+    facts: digest.facts.length,
+    pending: digest.pending || "none",
+    refs: digest.refs || "none",
+    ack: ack?.status || "no-result-block",
+    usage: usageInfo,
+  };
+}
+
+/** 清空会话：删除目标节点上的绑定会话并清除绑定（不可恢复；下次派发自动新建） */
+async function clearSession(configPath, config, nodeName) {
+  const hit = resolveNodeEntry(config, nodeName);
+  if (!hit?.node) throw new Error(`未配置节点 "${nodeName}"`);
+  const nodeKey = hit.key;
+  const node = hit.node;
+  let deleted = null;
+  if (node.sessionId) {
+    const nodeCfg = { ...node, opencodePassword: resolveFleetPassword(config) };
+    if (nodeCfg.opencodePassword) {
+      const r = await opencodeApi(nodeCfg, "DELETE", `/session/${node.sessionId}`, undefined, 15000);
+      if (r.status === 200 || r.status === 404) deleted = node.sessionId;
+    }
+  }
+  const next = { ...node };
+  delete next.sessionId;
+  delete next.digest;
+  delete next.usage;
+  config.nodes[nodeKey] = next;
+  if (configPath) {
+    try { saveConfigFile(configPath, config); } catch {}
+  }
+  return { ok: true, deletedSessionId: deleted };
+}
+
+/** 按 opencode-mesh 协议派发任务（复用节点会话；解析回执块） */
+async function dispatchToNode(configPath, config, nodeName, body, opts = {}) {
+  const hit = resolveNodeEntry(config, nodeName);
+  if (!hit?.node?.opencodeUrl) throw new Error(`节点 "${nodeName}" 缺少 opencodeUrl（先在 App「主控」页同步节点）`);
+  const nodeKey = hit.key;
+  let node = hit.node;
+  const nodeCfg = { ...node, opencodePassword: resolveFleetPassword(config) };
+  if (!nodeCfg.opencodePassword) throw new Error("缺少统一密码（请在 App「设置」页配置本机节点密码，或从其他控制端导入配置）");
+
+  const from = opts.from || "master";
+
+  // v1.5：目标平台未知时向注册表要一次并落盘（用于 env 头；失败不阻塞）
+  if (!node.platform) {
+    try {
+      const regs = await registryNodes(config.registry);
+      const reg = (regs || []).find((n) => (n.id || n.name) === nodeKey || n.name === node.name);
+      if (reg?.platform) {
+        node = { ...node, platform: reg.platform };
+        if (configPath) {
+          config.nodes[nodeKey] = { ...node };
+          try { saveConfigFile(configPath, config); } catch {}
+        }
+      }
+    } catch {}
+  }
+
+  // v1.5：派发前自动压缩（开关在 App 设置页；占用 ≥80% 时先结转压缩再派发）
+  if (config.autoCompact && !opts.newSession && node.sessionId) {
+    try {
+      const u = await sessionUsage(nodeCfg, node.sessionId);
+      if (u.ok && u.limit > 0 && u.used / u.limit >= 0.8) {
+        const c = await compactSession(configPath, config, nodeName, { from });
+        if (c.ok) node = config.nodes[nodeKey] || node;
+      }
+    } catch {}
+  }
+
   const task = opts.task || newTaskId("t");
   const mode = opts.mode || "one-shot";
 
@@ -317,7 +543,8 @@ async function dispatchToNode(configPath, config, nodeName, body, opts = {}) {
     sessionId = created.json.id;
   }
 
-  const envelope = wrapEnvelope({ from, task, mode, body });
+  const env = `s=${platformTag()} r=${node.platform || "?"}`;
+  const envelope = wrapEnvelope({ from, task, mode, body, env });
   const timeoutMs = (opts.timeoutSec || 300) * 1000;
   const res = await opencodeApi(nodeCfg, "POST", `/session/${sessionId}/message`, {
     parts: [{ type: "text", text: envelope }],
@@ -333,7 +560,15 @@ async function dispatchToNode(configPath, config, nodeName, body, opts = {}) {
   const parsed = parseResultBlock(texts);
 
   if (configPath) {
-    config.nodes[nodeKey] = { ...node, sessionId };
+    // v1.5：派发响应自带 tokens.total（零额外流量）→ 记录占用；回执入近窗历史（≤2 条）
+    const usageInfo = res.json?.info?.tokens?.total
+      ? { used: Number(res.json.info.tokens.total), model: res.json.info.modelID || node.usage?.model || "", at: new Date().toISOString() }
+      : node.usage || null;
+    const history = [
+      { task, status: parsed?.status || "unknown", summary: String(parsed?.summary || "").slice(0, 300), at: new Date().toISOString() },
+      ...(node.history || []),
+    ].slice(0, 2);
+    config.nodes[nodeKey] = { ...node, sessionId, history, ...(usageInfo ? { usage: usageInfo } : {}) };
     try {
       saveConfigFile(configPath, config);
     } catch {}
@@ -366,7 +601,13 @@ module.exports = {
   newTaskId,
   wrapEnvelope,
   parseResultBlock,
+  parseDigestBlock,
   opencodeApi,
+  platformTag,
+  fetchProviders,
+  sessionUsage,
+  compactSession,
+  clearSession,
   dispatchToNode,
 };
 

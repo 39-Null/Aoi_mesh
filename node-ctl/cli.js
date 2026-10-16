@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const fs = require("fs");
 const path = require("path");
-const { loadConfig, getNode, resolveNodeEntry, agentCall, agentHealth, registryNodes, registryFrps, resolveFleetPassword, dispatchToNode } = require("./lib");
+const { loadConfig, getNode, resolveNodeEntry, agentCall, agentHealth, registryNodes, registryFrps, resolveFleetPassword, dispatchToNode, sessionUsage, compactSession, clearSession } = require("./lib");
 
 const USAGE = `opencode-mesh node-ctl
 
@@ -11,6 +11,9 @@ const USAGE = `opencode-mesh node-ctl
   node-ctl start <node>                远程启动节点 opencode
   node-ctl stop <node>                 远程停止节点 opencode
   node-ctl restart <node>              远程重启节点 opencode
+  node-ctl usage <node>                查看与该节点的会话上下文占用（tokens 与百分比）
+  node-ctl compact <node>              压缩与该节点的对话上下文（digest 结转 + 换新会话）
+  node-ctl clear <node>                清空与该节点的对话上下文（删除目标会话，不可恢复）
   node-ctl fleet-config                输出主控 opencode 的 fleet MCP 配置片段
   node-ctl visitors-config [--out p]   生成主控侧 frpc visitors 配置（stcp 接入）
   node-ctl dispatch <node> "<任务>"    按 opencode-mesh 协议派发任务（信封+回执解析，复用会话）
@@ -245,6 +248,55 @@ ${sections.join("\n\n")}
         console.log("---- 原始回复 ----");
         console.log(res.raw);
       }
+      return;
+    }
+    if (command === "usage" || command === "compact" || command === "clear") {
+      const nodeName = args._[1];
+      if (!nodeName) {
+        console.error(`用法: node-ctl ${command} <node>`);
+        process.exitCode = 1;
+        return;
+      }
+      const { path: cfgPath, config } = loadConfig(args.config);
+      const hit = resolveNodeEntry(config, nodeName);
+      if (!hit) {
+        console.error(`未配置节点 "${nodeName}"`);
+        process.exitCode = 1;
+        return;
+      }
+      if (command === "usage") {
+        const nodeCfg = { ...hit.node, opencodePassword: resolveFleetPassword(config) };
+        const u = await sessionUsage(nodeCfg, hit.node.sessionId);
+        if (!u.ok) {
+          console.error(`失败：${u.error}`);
+          process.exitCode = 1;
+          return;
+        }
+        if (!u.sessionId) {
+          console.log(`节点 ${nodeName} 无绑定会话（先派发一次任务）`);
+          return;
+        }
+        if (u.stale) {
+          console.log(`节点 ${nodeName} 的绑定会话不存在（可能已被清理）；下次派发将自动重建`);
+          return;
+        }
+        const limitPart = u.limit > 0 ? `/${u.limit}（${u.percent}%）` : "（上限未知）";
+        console.log(`节点 ${nodeName} 会话占用：${u.used}${limitPart}；模型 ${u.modelID || "?"}`);
+        return;
+      }
+      if (command === "compact") {
+        const r = await compactSession(cfgPath, config, nodeName, {});
+        if (!r.ok) {
+          console.error(`压缩失败：${r.error}`);
+          process.exitCode = 1;
+          return;
+        }
+        console.log(`压缩完成：gen ${r.gen}，事实 ${r.facts} 条；最近未完成：${r.pending}`);
+        console.log(`会话：${r.oldSessionId} → ${r.newSessionId}（确认：${r.ack}）`);
+        return;
+      }
+      const r = await clearSession(cfgPath, config, nodeName);
+      console.log(r.deletedSessionId ? `已清空：删除会话 ${r.deletedSessionId}（下次派发将新建）` : "无绑定会话（已清空绑定）");
       return;
     }
     if (command === "fleet-config") return await cmdFleetConfig(config);
